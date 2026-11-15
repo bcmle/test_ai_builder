@@ -1,5 +1,4 @@
-# Editable install with no version control (ai-business-builder==0.1.0)
--e /private/tmp/ai-builder-implementation
+# Third-party dependencies only; install this repository separately after dependencies.
 annotated-doc==0.0.6
 annotated-types==0.8.0
 anyio==4.16.0
