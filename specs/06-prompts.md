@@ -1,6 +1,6 @@
 # 06. Спецификация промптов v0.4
 
-Статус: DRAFT. Ниже начальные тексты ролей для реализации и дальнейшего eval. Они не прошли испытания на реальной модели. Каждый промпт получает version/hash; одинаковые версии используются в одном run.
+Статус: APPROVED BASELINE v1.0. Ниже начальные тексты ролей для реализации и дальнейшего eval. Они не прошли испытания на реальной модели. Каждый промпт получает version/hash; одинаковые версии используются в одном run.
 
 ## Сборка запроса
 
@@ -49,3 +49,7 @@ System = общие правила + роль. User = сериализованн
 Structured output ограничивает формат, но не доказательность. Кандидат для адаптера — [Claude structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs). Доступность конкретной модели и совместимость схем проверяются перед фиксацией model ID; сам провайдер пока не утверждён.
 
 Все ролевые входы P02–P05 содержат assessment_scope_id и выбранный вариант. Нельзя переносить вывод с другого сегмента без доказанной применимости. P01 не использует ожидаемый score при классификации и не принимает решение о включении в CEO-подборку; состав вычисляет оркестратор по 13-catalog.
+
+## Baseline v1.0 output policy
+
+All generated product-facing analysis, cards, explanations, status messages and exports are in English. Preserve original source quotations and stable IDs. LLMs do not invent token usage or dollar costs: usage and billing values are populated by adapters and deterministic accounting. Approved bounded intervals are valid final factor inputs; the deterministic ranker uses conservative bounds and goal-feasibility groups from 07-ranking.

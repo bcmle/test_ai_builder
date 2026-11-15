@@ -1,6 +1,6 @@
 # 08. Архитектура, конфигурация и API
 
-Статус: DRAFT v0.4. Предложение: один сервер, модульное приложение, отдельный worker. Не утверждённый стек.
+Статус: APPROVED BASELINE v1.0 (пользователь, 15.11.2026). Предложение: один сервер, модульное приложение, отдельный worker. Не утверждённый стек.
 
 ## Компоненты
 
@@ -71,3 +71,7 @@ POST /runs фиксирует CollectionSnapshot после discovery/класс
 Дополнительные owner-операции: POST /catalog/reviews (expected_catalog_revision_id, merge/split/classify, IDs, reason, snapshot_ids) создаёт CatalogRevision; POST /runs/{id}/selection (expected_control_version, members, reason) разрешён только до фиксации, проверяет уникальность баз и релевантность вариантов; 10–15 баз — целевой размер полной подборки, меньший состав разрешён при явном подтверждении владельцем с причиной и признаком partial (A01 остаётся непройденным); POST /studies/{id}/publish и POST /catalog/publish (revision_id, expected_revision_id) публикуют явные manifests. Публикация run сама не публикует весь backlog/catalog. Новая версия catalog не меняет состав/паспорт старой подборки. Публичный GET /catalog получает только published catalog snapshot; owner может запросить конкретную draft revision.
 
 POST /studies/{id}/scope (expected_revision_id, scope, reason) создаёт новую StudyRevision со всеми исключениями и незавершённым покрытием; автоматического закрытия/перехода нет. POST /runs/{id}/execution-policy (expected_control_version, limits, reason) явно продлевает ресурсы без изменения аналитического hash; study-budget меняется отдельной owner-операцией с expected_revision_id. Смена лимитов не обнуляет расход.
+
+## Usage API v1.0
+
+Owner-only GET /owner/usage и GET /owner/usage/export?format=csv|json с фильтрами date_from/date_to/study_id/run_id/agent/provider/model/purpose. Агрегация поверх UsageRecord/PricingVersion по 10-operations, без повторного прибавления settled reservations. Чтение расходов не вызывает платные API. Встроенные операции discovery/selection создают run до первого внешнего вызова, чтобы расходы подготовки входили в $25/run.

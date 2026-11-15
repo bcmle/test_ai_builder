@@ -1,6 +1,6 @@
 # 03. Контракты данных и состояния
 
-Статус: DRAFT v0.4. Каноническое описание будущих схем; исполняемых JSON Schema и базы пока нет. Заменяет накопленные определения v0.1–v0.3.
+Статус: APPROVED BASELINE v1.0 (пользователь, 15.11.2026). Каноническое описание будущих схем; исполняемых JSON Schema и базы пока нет. Заменяет накопленные определения v0.1–v0.3.
 
 ## Общие правила и области принадлежности
 
@@ -44,7 +44,7 @@ Source: canonical_url, publisher nullable. SourceSnapshot: source_id, requested_
 | Conflict | claim_id; alternatives[{value_or_text,evidence_ids,dates}]; material_to_criteria[]; material_to_factors[]; status open/resolved; resolution nullable |
 | QuantityEstimate | min; max; unit days/currency/count; currency nullable; as_of; start_event nullable; end_event nullable; assumption_claim_ids[]; estimate_kind fact/calculation/judgment |
 | FactorAssessment | factor_id; value integer 0..4 nullable; score_low/high nullable; quantity_estimate_ids[]; supporting_claim_ids[]; rationale; missing_evidence[] |
-| Score | config_hash; factor_assessment_ids[]; value nullable 0..100; range nullable; status final/provisional/unavailable; calculation_version |
+| Score | config_hash; factor_assessment_ids[]; value nullable 0..100; range nullable; status final/provisional/unavailable; calculation_version; goal_feasibility feasible/uncertain/infeasible; feasibility_claim_ids[] |
 | Card | eligibility; analysis_status; headline; claim_ids[]; risk_assessment_ids[]; score_id nullable; test_plan_claim_ids[]; limitations[] |
 
 Evidence ID всегда означает EvidenceLink.id, а не Source.id или URL. Citation проверяется в конкретном snapshot. У новых записей LLM допустим temp_id в пакете и ссылки на temp_id того же пакета; приложение атомарно валидирует, назначает постоянные ID и переписывает все ссылки. Неизвестный ID/нарушение scope отклоняет пакет целиком. Роли не устанавливают серверные поля id/run/revision/timestamps: приложение заполняет их после валидации.
@@ -67,7 +67,7 @@ CriterionResult.result заполнен только при evaluation_state=com
 
 Eligibility: есть completed fail → fail; иначе есть незавершённый критерий → pending; иначе есть completed unknown → needs_review; иначе все обязательные completed pass → pass. Открытые unknown при технической неполноте показываются как вопросы дополнительно, не заменяют технический статус.
 
-Analysis_status: pending/running/technical_incomplete/needs_review/complete. complete требует всех нужных стадий и определённых факторов; для неизвестного фактора или unresolved verification — needs_review; завершённая проверка с обоснованным диапазоном допускает complete+provisional. Fail может завершить конвейер до агентов; это complete по предписанному маршруту, но никогда ranked. Критик/проверяющий обязательны для каждой допущенной модели.
+Analysis_status: pending/running/technical_incomplete/needs_review/complete. complete требует всех нужных стадий и определённых факторов; для неизвестного фактора или unresolved verification — needs_review; завершённая проверка с полным набором обоснованных диапазонов допускает complete+final. Fail может завершить конвейер до агентов; это complete по предписанному маршруту, но никогда ranked. Критик/проверяющий обязательны для каждой допущенной модели.
 
 | Приоритет отображения | Условие | Группа UI |
 |---|---|---|
@@ -77,11 +77,11 @@ Analysis_status: pending/running/technical_incomplete/needs_review/complete. com
 | 4 | eligibility=pass, analysis_status=complete, Score=provisional | Предварительная оценка |
 | 5 | eligibility=pass, analysis_status=complete, Score=final | Итоговый рейтинг |
 
-Статистика технических ошибок показывается отдельно даже у fail. Счётчики групп взаимно исключаются; score отсутствует до оценки и не равен нулю. Политика включения интервальных оценок в итоговый рейтинг остаётся открытым продуктовым решением D-08.
+Статистика технических ошибок показывается отдельно даже у fail. Счётчики групп взаимно исключаются; score отсутствует до оценки и не равен нулю. Обоснованные интервалы допускаются в final: value равен нижней границе, диапазон виден; группы достижимости определены в 07-ranking.
 
 StageExecution: study_id, run_id nullable, assessment_scope_id nullable, analysis_revision_id nullable, stage, input_hash/config_hash/prompt_version, state pending/running/succeeded/retry_wait/failed/paused, attempt_count, request_count, lease_token nullable, lease_expires_at nullable, output_ref nullable, error_category nullable. Запись результата принимает только актуальный lease_token. Истёкший lease возвращается в очередь; старый ответ не перезаписывает новый результат. Подробные лимиты запросов/попыток — 10-operations.
 
-Run.status: queued/running/completed/partial/paused/failed. completed — все выбранные модели получили конечный результат по своему маршруту, включая needs_review; partial — есть техническая неполнота или подборка меньше target; paused — ждёт вмешательства/бюджета; failed — нет пригодного результата при фатальной ошибке. Discovery-цель кандидатов и полнота CEO-подборки — отдельные флаги, не один счётчик.
+Run.status: selecting/queued/running/completed/partial/paused/failed. selecting включает discovery и фиксацию подборки; расходы уже относятся к run. completed — все выбранные модели получили конечный результат по своему маршруту, включая needs_review; partial — есть техническая неполнота или подборка меньше target; paused — ждёт вмешательства/бюджета; failed — нет пригодного результата при фатальной ошибке. Discovery-цель кандидатов и полнота CEO-подборки — отдельные флаги, не один счётчик.
 
 BudgetReservation: study_id, run_id nullable, execution_id, request_id, amount_upper, currency, state reserved/settled/unknown/released, actual_amount nullable. AuditEvent: study_id, run_id nullable, execution_id nullable, timestamp, event_type, actor, payload_ref, sanitized_payload, previous_revision_id nullable.
 
@@ -93,3 +93,7 @@ BudgetReservation: study_id, run_id nullable, execution_id, request_id, amount_u
 - Источник может переиспользоваться, применимость к другому сегменту/рынку проверяется заново.
 - published revision и связанные manifest-объекты неизменяемы.
 - Счётчики компаний, базовых моделей, вариантов, подборки и ранжированных вариантов различаются.
+
+## Usage ledger v1.0
+
+UsageRecord и PricingVersion — канонические сущности учёта по контракту 10-operations. UsageRecord связан с BudgetReservation по reservation_id/request_id; run/study ссылки и nullable-счётчики соблюдают область исполнения. Корректировки usage/тарифа журналируются; записи хранятся вместе с историей запусков и входят в backup. Данные провайдеров санитизируются до сохранения: authorization headers, API-ключи и credentials не входят в usage payload.
