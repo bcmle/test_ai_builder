@@ -1,0 +1,29 @@
+# Local discussion and employer-provided source
+/full_tt.md
+/Тестовое_задание_AI-строитель.md
+
+# Credentials and local settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Runtime and private evidence
+/data/
+/backups/
+/logs/
+/snapshots/
+/private/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Local tools
+.DS_Store
+.venv/
+__pycache__/
+.pytest_cache/
+node_modules/
