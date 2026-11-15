@@ -319,7 +319,8 @@ async def _freeze(ledger, identifier, context, models, leads, uncertainties):
 async def _ensure_child(ledger, identifier, item, context):
     research = ResearchContext(plan=SourceResearchPlan.model_validate(item['candidate']['plan']),
                                openai_pricing=context.openai_pricing, tavily_pricing=context.tavily_pricing,
-                               role_settings=context.role_settings, purpose=context.purpose)
+                               role_settings=context.role_settings, purpose=context.purpose,
+                               pipeline_prefix=context.pipeline_prefix, pipeline_prompts=context.pipeline_prompts)
     async with ledger.locked(ledger.run_id, fenced=True) as (conn, study, __):
         collection = await (await conn.execute('SELECT selected_count,membership_hash FROM app.collections WHERE id=%s', (identifier,))).fetchone()
         if collection['selected_count'] != 20 or not collection['membership_hash']:
@@ -347,7 +348,7 @@ async def _set_state(ledger, identifier, state, reason=None):
                            (state, reason, identifier))
 
 
-async def _resume_child(ledger, identifier, child_id):
+async def _resume_child(ledger, identifier, child_id, *, reason='Owner invoked --resume-collection; no uncertain external operation remains'):
     """Explicit CLI resume only; uncertain external effects always need review."""
     async with ledger.locked(ledger.run_id, fenced=True) as (conn, study, __):
         child = await (await conn.execute('SELECT * FROM app.runs WHERE id=%s AND study_id=%s FOR UPDATE',
@@ -373,14 +374,17 @@ async def _resume_child(ledger, identifier, child_id):
             count(*) FILTER (WHERE provider='tavily' AND endpoint='extract') AS extracts
             FROM app.usage WHERE run_id=%s''', (child_id,))).fetchone()
         reads = await (await conn.execute('SELECT count(*) AS n FROM app.source_fetch_attempts WHERE run_id=%s', (child_id,))).fetchone()
+        sources = await (await conn.execute("SELECT EXISTS(SELECT 1 FROM app.source_research WHERE run_id=%s AND state='frozen') AS frozen",
+                                           (child_id,))).fetchone()
         if (costs['study_used'] >= study['limit_micro'] or costs['run_used'] >= child['limit_micro']
                 or await ledger.active_ms(conn, child) >= limits['active_seconds'] * 1000
-                or counts['llm'] >= limits['provider_requests'] or counts['searches'] >= limits['search_requests']
-                or reads['n'] + counts['extracts'] >= limits['document_fetches']):
+                or counts['llm'] >= limits['provider_requests']
+                or (not sources['frozen'] and (counts['searches'] >= limits['search_requests']
+                    or reads['n'] + counts['extracts'] >= limits['document_fetches']))):
             raise BudgetExceeded('Paused child has exhausted an existing limit')
         await conn.execute("UPDATE app.runs SET status='running',control_version=control_version+1 WHERE id=%s", (child_id,))
         await ledger.event(conn, child_id, 'explicit_collection_resume',
-                           {'collection_id': identifier, 'reason': 'Owner invoked --resume-collection; no uncertain external operation remains'})
+                           {'collection_id': identifier, 'reason': reason})
 
 
 async def _save_model(ledger, identifier, item, public, state, error=None):
@@ -439,10 +443,15 @@ async def _publish(ledger, identifier, context, data_dir, public_model, publish_
 
 async def run_collection(pool, artifacts: ArtifactStore, *, context: CollectionContext | None = None,
                          resume_collection: str | None = None, openai_key='', tavily_key='', data_dir=None,
+                         retry_failed: bool = False, retry_model_ids: tuple[str, ...] = (),
                          provider_client=None, fetch_document=None, parser=None,
                          research_runner=run_research, model_projector=None, snapshot_publisher=None) -> CollectionResult:
     if resume_collection and context is not None:
         raise ValueError('Resume uses the saved collection context; overrides are forbidden')
+    if (retry_failed or retry_model_ids) and not resume_collection:
+        raise ValueError('Technical recovery requires --resume-collection')
+    if retry_model_ids and not retry_failed:
+        raise ValueError('Selected recovery requires --retry-failed')
     if not resume_collection and (context is None or not openai_key or not tavily_key):
         raise ValueError('New collection requires explicit context and both provider keys')
     if model_projector is None or snapshot_publisher is None:
@@ -471,10 +480,8 @@ async def run_collection(pool, artifacts: ArtifactStore, *, context: CollectionC
         nonlocal context, clock_started
         row, items = await _read_collection(ledger, identifier)
         context = CollectionContext.model_validate(row['context'])
-        pending = [item for item in items if item['state'] in {'queued', 'running'}]
-        if (not row['membership_hash'] or pending) and (
-                context.pipeline_prefix != PREFIX or context.pipeline_prompts != PROMPTS):
-            raise Conflict('Saved pipeline prompts differ from this release; paid resume is forbidden')
+        if set(retry_model_ids) - {item['model_id'] for item in items}:
+            raise ValueError('Recovery selection contains a model outside this frozen collection')
         if not row['membership_hash']:
             if not openai_key or not tavily_key:
                 raise ValueError('Provider keys are required for unfinished discovery')
@@ -497,7 +504,17 @@ async def run_collection(pool, artifacts: ArtifactStore, *, context: CollectionC
         await _publish(ledger, identifier, context, data_dir, model_projector, snapshot_publisher, 'Collection selected')
         if row['selected_count'] != 20:
             return
-        pending = [item for item in items if item['state'] in {'queued', 'running'}]
+        pending = [item for item in items if item['state'] in {'queued', 'running'} or
+                   (retry_failed and item['state'] == 'technical_failed' and
+                    (not retry_model_ids or item['model_id'] in retry_model_ids))]
+        recovered = [item for item in pending if item['state'] == 'technical_failed']
+        if recovered:
+            async with ledger.locked(ledger.run_id, fenced=True) as (conn, _, __):
+                await ledger.event(conn, ledger.run_id, 'collection_recovery_selected', {
+                    'collection_id': identifier,
+                    'models': [{'model_id': item['model_id'], 'run_id': item['run_id'],
+                                'previous_error': item['error_code']} for item in recovered],
+                    'policy': 'bounded-role-repair-1', 'frozen_inputs_unchanged': True})
         if not pending:
             complete = all(item['state'] == 'completed' for item in items)
             await _set_state(ledger, identifier, 'completed' if complete else 'partial',
@@ -601,6 +618,7 @@ async def run(args):
     async with execution_pool(dsn) as pool:
         result = await run_collection(pool, ArtifactStore(data_dir / 'evidence'), context=context,
                                       resume_collection=args.resume_collection, data_dir=data_dir,
+                                      retry_failed=args.retry_failed, retry_model_ids=tuple(args.retry_model or ()),
                                       openai_key=os.environ.get('OPENAI_API_KEY', ''), tavily_key=os.environ.get('TAVILY_API_KEY', ''))
     print(f'Collection {result.collection_id}: {result.state}; selected={result.selected_count}/20; '
           f'analysed={result.completed_count}/20; accounted=${result.usage["accounted_micro"]/1_000_000:.4f}; '
@@ -613,6 +631,8 @@ def main():
     for flag in ('config', 'plan', 'pricing', 'tavily-pricing', 'settings', 'study-budget', 'resume-collection'):
         cli.add_argument('--' + flag)
     cli.add_argument('--purpose', choices=('live', 'eval', 'development'))
+    cli.add_argument('--retry-failed', action='store_true', help='Explicitly retry technical failures using their saved inputs')
+    cli.add_argument('--retry-model', action='append', help='Limit --retry-failed to this frozen model ID; repeatable')
     try:
         asyncio.run(run(cli.parse_args()))
     except Exception as error:

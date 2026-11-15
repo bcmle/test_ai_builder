@@ -4,7 +4,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, model_serializer, model_validator
 
 from .domain import Contract
 
@@ -45,6 +45,14 @@ class CriterionConfig(Contract):
     pass_rule: str
     fail_rule: str
     unknown_rule: str
+    allow_design_basis: bool = False
+
+    @model_serializer(mode='wrap')
+    def legacy_compatible(self, handler):
+        value = handler(self)
+        if not self.allow_design_basis:
+            value.pop('allow_design_basis', None)
+        return value
 
 
 class FactorConfig(Contract):
@@ -54,7 +62,7 @@ class FactorConfig(Contract):
 
 
 class Configuration(Contract):
-    schema_version: Literal["1.0"]
+    schema_version: Literal["1.0", "1.1"]
     language: Literal["en"]
     model: str = Field(min_length=1)
     market: str
@@ -70,6 +78,10 @@ class Configuration(Contract):
             raise ValueError("Excluded market")
         if len(self.criteria) != 10 or {c.id for c in self.criteria} != {f"F{i:02}" for i in range(1, 11)}:
             raise ValueError("All ten mandatory filters must be configured exactly once")
+        allowed_design = {'F02', 'F05', 'F06', 'F07', 'F08', 'F09'}
+        if any(c.allow_design_basis and (self.schema_version != '1.1' or c.id not in allowed_design)
+               for c in self.criteria):
+            raise ValueError('Design basis is limited to the v1.1 operational criteria')
         if len(self.factors) != 5 or {f.id for f in self.factors} != {f"S{i:02}" for i in range(1, 6)}:
             raise ValueError("All five scoring factors required")
         if sum(f.weight for f in self.factors) != 100:

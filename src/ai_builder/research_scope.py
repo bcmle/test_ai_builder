@@ -18,14 +18,14 @@ import time
 from typing import Literal
 
 from psycopg.types.json import Jsonb
-from pydantic import model_validator
+from pydantic import model_serializer, model_validator
 
 from .config import Configuration, load_config
 from .evidence import ArtifactStore
 from .fetch_transport import ControlledFetcher
 from .pg_execution import acquire_lease, execution_pool, renew_lease
 from .pg_ledger import PostgresLedger, digest
-from .pipeline import ModelRoles, build_scope_graph, execute_scope
+from .pipeline import ModelRoles, build_scope_graph, execute_scope, prompt_bundle
 from .pricing import Pricing
 from .providers import MeteredHTTP, TavilyAdapter
 from .report import render_report
@@ -41,14 +41,83 @@ class ResearchContext(FrozenContract):
     tavily_pricing: Pricing
     role_settings: dict
     purpose: Literal['development', 'eval', 'live']
+    pipeline_prefix: str | None = None
+    pipeline_prompts: dict[str, str] | None = None
+    parent_collection_id: str | None = None
+    parent_run_id: str | None = None
+
+    @model_serializer(mode='wrap')
+    def serialize_compatible(self, handler):
+        value = handler(self)
+        for name in ('pipeline_prefix', 'pipeline_prompts', 'parent_collection_id', 'parent_run_id'):
+            if getattr(self, name) is None:
+                value.pop(name, None)
+        return value
 
     @model_validator(mode='after')
     def compatible(self):
         if self.openai_pricing.provider != 'openai' or self.tavily_pricing.provider != 'tavily':
             raise ValueError('Explicit OpenAI and Tavily tariffs are required')
         # Validation constructs no network request and writes no ledger state.
-        ModelRoles(None, self.openai_pricing, '', self.role_settings, purpose=self.purpose)
+        if (self.pipeline_prefix is None) != (self.pipeline_prompts is None):
+            raise ValueError('A frozen prompt bundle requires both prefix and prompts')
+        if (self.parent_collection_id is None) != (self.parent_run_id is None):
+            raise ValueError('A follow-up requires both parent collection and run identifiers')
+        if self.parent_collection_id == '' or self.parent_run_id == '':
+            raise ValueError('Parent identifiers cannot be empty')
+        ModelRoles(None, self.openai_pricing, '', self.role_settings, purpose=self.purpose,
+                   prompt_prefix=self.pipeline_prefix, prompts=self.pipeline_prompts)
         return self
+
+
+def freeze_context(config: Configuration, context: ResearchContext) -> ResearchContext:
+    """Select prompts once, before persistence; never change a saved context."""
+    if context.pipeline_prefix is None:
+        prefix, prompts = prompt_bundle(config.schema_version)
+        context = context.model_copy(update={'pipeline_prefix': prefix, 'pipeline_prompts': prompts})
+    return ResearchContext.model_validate_json(context.model_dump_json())
+
+
+async def _collection_parent(conn, run_id, collection_id=None):
+    rows = await (await conn.execute('''SELECT c.*,i.model_id,i.candidate,r.study_id AS parent_study_id,
+        r.config_json AS parent_config,r.config_hash AS parent_config_hash
+        FROM app.collection_items i JOIN app.collections c ON c.id=i.collection_id
+        JOIN app.runs r ON r.id=i.run_id
+        WHERE i.run_id=%s AND (%s::text IS NULL OR c.id=%s)''',
+        (run_id, collection_id, collection_id))).fetchall()
+    if len(rows) != 1:
+        raise Conflict('A unique frozen parent collection member is required')
+    row = rows[0]
+    members = await (await conn.execute('''SELECT model_id,position,candidate FROM app.collection_items
+        WHERE collection_id=%s ORDER BY position''', (row['id'],))).fetchall()
+    if (digest(row['context']) != row['context_hash'] or not row['membership_hash']
+            or len(members) != row['selected_count'] or digest(members) != row['membership_hash']
+            or row['parent_study_id'] != row['study_id']
+            or Configuration.model_validate(row['parent_config']).digest() != row['parent_config_hash']
+            or row['parent_config'] != row['context'].get('config')):
+        raise Conflict('Parent collection integrity mismatch')
+    return row
+
+
+async def _resolve_legacy_prompts(conn, run_id, config, context):
+    if context.pipeline_prefix is not None:
+        return context
+    member = await (await conn.execute('SELECT collection_id FROM app.collection_items WHERE run_id=%s',
+                                       (run_id,))).fetchone()
+    if member:
+        parent = await _collection_parent(conn, run_id, member['collection_id'])
+        frozen = parent['context']
+        if (parent['candidate']['plan'] != context.plan.model_dump(mode='json')
+                or any(frozen.get(name) != context.model_dump(mode='json')[name]
+                       for name in ('openai_pricing', 'tavily_pricing', 'role_settings', 'purpose'))
+                or not isinstance(frozen.get('pipeline_prefix'), str)
+                or not isinstance(frozen.get('pipeline_prompts'), dict)):
+            raise Conflict('Legacy child differs from its frozen collection context')
+        return ResearchContext.model_validate({**context.model_dump(mode='json'),
+            'pipeline_prefix': frozen['pipeline_prefix'], 'pipeline_prompts': frozen['pipeline_prompts']})
+    if config.schema_version != '1.0':
+        raise Conflict('New research context is missing its frozen prompt bundle')
+    return freeze_context(config, context)
 
 
 @dataclass(frozen=True)
@@ -69,10 +138,17 @@ async def insert_research_run(conn, config: Configuration, context: ResearchCont
     """
     if context.openai_pricing.model != config.model:
         raise ValueError('Pricing model must match the frozen run configuration')
-    value = ResearchContext.model_validate_json(context.model_dump_json()).model_dump(mode='json')
+    context = freeze_context(config, context)
+    value = context.model_dump(mode='json')
     study = await (await conn.execute('SELECT market FROM app.studies WHERE id=%s FOR UPDATE', (study_id,))).fetchone()
     if not study or study['market'] != config.market:
         raise ValueError('Research must match the existing study market')
+    if context.parent_collection_id is not None:
+        parent = await _collection_parent(conn, context.parent_run_id, context.parent_collection_id)
+        if parent['study_id'] != study_id or parent['model_id'] != context.plan.seed.base_model_id:
+            raise ValueError('Follow-up must preserve the parent study and base model')
+        if context.plan.seed.scope_id == parent['candidate']['plan']['seed']['scope_id']:
+            raise ValueError('Follow-up requires a new assessment scope')
     run_id = uid()
     await conn.execute('''INSERT INTO app.runs(id,study_id,config_json,config_hash,limit_micro,status,
         graph_version,state_schema_version,coordinator_thread_id)
@@ -93,6 +169,8 @@ async def create_research_run(pool, config: Configuration, context: ResearchCont
         raise ValueError('Pricing model must match the frozen run configuration')
     if study_id is not None and study_budget is not None:
         raise ValueError('Existing study budget cannot be overridden')
+    if context.parent_collection_id is not None and study_id is None:
+        raise ValueError('Follow-up requires the existing study_id')
     if study_id is None and (study_budget is None or micro(study_budget) <= 0):
         raise ValueError('An explicit positive study budget is required')
     # Revalidate a serialized copy so later mutation of the caller's dictionaries
@@ -113,6 +191,11 @@ async def _load_context(ledger):
         context = ResearchContext.model_validate(row['context'])
         if config.digest() != run['config_hash'] or context.openai_pricing.model != config.model:
             raise Conflict('Run configuration integrity mismatch')
+        if context.parent_collection_id is not None:
+            parent = await _collection_parent(conn, context.parent_run_id, context.parent_collection_id)
+            if parent['study_id'] != run['study_id'] or parent['model_id'] != context.plan.seed.base_model_id:
+                raise Conflict('Follow-up parent study or model mismatch')
+        context = await _resolve_legacy_prompts(conn, ledger.run_id, config, context)
         return config, context, run['status']
 
 
@@ -209,7 +292,8 @@ async def run_research(pool, artifacts: ArtifactStore, *, openai_key: str = '', 
         clock_started = not replay
         deadline = None if replay else time.monotonic() + remaining
         roles = ModelRoles(ledger, context.openai_pricing, openai_key, context.role_settings,
-                           purpose=context.purpose, client=provider_client, deadline=deadline)
+                           purpose=context.purpose, client=provider_client, deadline=deadline,
+                           prompt_prefix=context.pipeline_prefix, prompts=context.pipeline_prompts)
         fetch = fetch_document or ControlledFetcher(limits=context.plan.fetch_limits()).fetch
 
         def search_factory(operation_key):
@@ -291,23 +375,25 @@ async def run(args):
         raise ValueError('DATABASE_URL is required; migrations must already be applied')
     context = config = None
     if args.resume_run:
-        if any(getattr(args, field) is not None for field in ('config', 'plan', 'pricing', 'tavily_pricing', 'settings', 'study_budget', 'purpose')):
+        if any(getattr(args, field, None) is not None for field in ('config', 'plan', 'pricing', 'tavily_pricing',
+                'settings', 'study_budget', 'study_id', 'parent_collection_id', 'parent_run_id', 'purpose')):
             raise ValueError('Resume cannot override saved configuration, plan, prices or role settings')
     else:
-        if not all((args.plan, args.pricing, args.tavily_pricing, args.settings, args.study_budget)):
-            raise ValueError('New research requires plan, both tariffs, role settings and study budget')
+        if not all((args.plan, args.pricing, args.tavily_pricing, args.settings)) or not (args.study_budget or args.study_id):
+            raise ValueError('New research requires plan, both tariffs, role settings and study budget or existing study')
         config = load_config(args.config or 'config/baseline.json')
         context = ResearchContext(
             plan=SourceResearchPlan.model_validate_json(Path(args.plan).read_text()),
             openai_pricing=Pricing.model_validate_json(Path(args.pricing).read_text()),
             tavily_pricing=Pricing.model_validate_json(Path(args.tavily_pricing).read_text()),
-            role_settings=json.loads(Path(args.settings).read_text()), purpose=args.purpose or 'live')
+            role_settings=json.loads(Path(args.settings).read_text()), purpose=args.purpose or 'live',
+            parent_collection_id=args.parent_collection_id, parent_run_id=args.parent_run_id)
     data_root = Path(os.environ.get('AI_BUILDER_DATA', 'outputs'))
     async with execution_pool(dsn) as pool:
         result = await run_research(pool, ArtifactStore(data_root / 'evidence'),
                                     openai_key=os.environ.get('OPENAI_API_KEY', ''),
                                     tavily_key=os.environ.get('TAVILY_API_KEY', ''),
-                                    config=config, context=context, study_budget=args.study_budget,
+                                    config=config, context=context, study_budget=args.study_budget, study_id=args.study_id,
                                     resume_run=args.resume_run, output=args.output)
     print(f'Run: {result.run_id}\nPrivate draft: {result.output}\nSource gaps: {len(result.prepared.gaps)}', flush=True)
     return result.run_id
@@ -315,7 +401,8 @@ async def run(args):
 
 def main():
     cli = argparse.ArgumentParser(description=__doc__)
-    for flag in ('config', 'plan', 'pricing', 'tavily-pricing', 'settings', 'study-budget', 'resume-run', 'output'):
+    for flag in ('config', 'plan', 'pricing', 'tavily-pricing', 'settings', 'study-budget', 'study-id',
+                 'parent-collection-id', 'parent-run-id', 'resume-run', 'output'):
         cli.add_argument('--' + flag)
     cli.add_argument('--purpose', choices=('development', 'eval', 'live'))
     try:

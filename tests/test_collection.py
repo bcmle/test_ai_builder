@@ -179,6 +179,31 @@ def test_local_failure_continues_and_provider_auth_stops_collection(config, tmp_
                     research_runner=locally_failing, data_dir=tmp_path / 'local')
             assert result.state == 'partial' and result.completed_count == 19 and len(calls) == 20
             assert load_snapshot(tmp_path / 'local', result.collection_id)['models'][0]['status'] == 'technical_failed'
+            async with pool.connection() as conn:
+                failed = await (await conn.execute('SELECT model_id,run_id FROM app.collection_items WHERE collection_id=%s AND position=1',
+                                                   (result.collection_id,))).fetchone()
+            original_counts = (len(fixture.searches), fixture.normalizations, len(fixture.child_searches))
+            async with httpx.AsyncClient(transport=httpx.MockTransport(fixture)) as client:
+                recovered = await run_collection(pool, ArtifactStore(tmp_path / 'one'),
+                    resume_collection=result.collection_id, retry_failed=True, retry_model_ids=(failed['model_id'],),
+                    openai_key='fixture', tavily_key='fixture', provider_client=client, data_dir=tmp_path / 'local')
+            assert recovered.state == 'completed' and recovered.completed_count == 20
+            assert (len(fixture.searches), fixture.normalizations, len(fixture.child_searches)) == (
+                original_counts[0], original_counts[1], original_counts[2] + 1)
+            async with pool.connection() as conn:
+                same = await (await conn.execute('SELECT model_id,run_id FROM app.collection_items WHERE collection_id=%s AND position=1',
+                                                 (result.collection_id,))).fetchone()
+                event = await (await conn.execute("SELECT payload FROM app.events WHERE kind='collection_recovery_selected' AND payload->>'collection_id'=%s",
+                                                  (result.collection_id,))).fetchone()
+            assert same == failed and event['payload']['frozen_inputs_unchanged']
+
+            def forbidden(request):
+                raise AssertionError('Repeated recovery must skip completed children')
+
+            async with httpx.AsyncClient(transport=httpx.MockTransport(forbidden)) as client:
+                replay = await run_collection(pool, ArtifactStore(tmp_path / 'one'), resume_collection=result.collection_id,
+                    retry_failed=True, retry_model_ids=(failed['model_id'],), provider_client=client, data_dir=tmp_path / 'local')
+            assert replay.usage == recovered.usage
             unauthorized = Providers(pool, failure=401)
             async with httpx.AsyncClient(transport=httpx.MockTransport(unauthorized)) as client:
                 stopped = await run_collection(pool, ArtifactStore(tmp_path / 'two'), context=context(config),
@@ -186,6 +211,15 @@ def test_local_failure_continues_and_provider_auth_stops_collection(config, tmp_
             assert stopped.state == 'partial' and stopped.completed_count == 0
             assert unauthorized.child_searches == ['child-research-1']
             assert len(load_snapshot(tmp_path / 'auth', stopped.collection_id)['models']) == 20
+    asyncio.run(check())
+
+
+def test_recovery_requires_explicit_saved_collection(tmp_path):
+    async def check():
+        with pytest.raises(ValueError, match='requires --resume-collection'):
+            await run_collection(None, ArtifactStore(tmp_path), retry_failed=True)
+        with pytest.raises(ValueError, match='requires --retry-failed'):
+            await run_collection(None, ArtifactStore(tmp_path), resume_collection='existing', retry_model_ids=('member',))
     asyncio.run(check())
 
 

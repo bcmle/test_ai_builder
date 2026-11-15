@@ -22,7 +22,7 @@ from psycopg_pool import PoolTimeout
 from .config import load_config
 from .pg_execution import execution_pool
 from .pg_migrate import MIGRATIONS
-from .public import CRITERIA, FACTORS, GOALS, STATUS_LABELS, load_snapshot
+from .public import CRITERIA, FACTORS, GOALS, STATUS_LABELS, load_featured_followup, load_snapshot
 
 
 async def check_database(pool):
@@ -95,6 +95,7 @@ def create_app(data_dir=None, config_path=None, *, database_url=None, technical_
     async def home():
         snapshot = load_snapshot(data)
         return page('public_home.html', snapshot=snapshot,
+                    followup=load_featured_followup(data),
                     featured=snapshot['models'][:3] if snapshot else [])
 
     @app.api_route('/runs/{run_id}', methods=['GET', 'HEAD'], response_class=HTMLResponse)
@@ -125,7 +126,13 @@ def create_app(data_dir=None, config_path=None, *, database_url=None, technical_
         model = next((m for m in snapshot['models'] if m['id'] == model_id), None)
         if model is None:
             raise HTTPException(404, 'Model not found in this published collection')
+        followup = load_featured_followup(data)
+        if followup and (followup['parent_collection_id'] != snapshot['run_id']
+                         or followup['parent_model_id'] != model['id']
+                         or followup['models'][0]['base_model_id'] != model['base_model_id']):
+            followup = None
         return page('public_model.html', snapshot=snapshot, model=model,
+                    followup=followup,
                     sources={s['id']: s for s in model['sources']})
 
     @app.api_route('/compare', methods=['GET', 'HEAD'], response_class=HTMLResponse)

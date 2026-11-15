@@ -45,6 +45,25 @@ class Criterion(Contract):
         return self
 
 
+class DesignBasis(Contract):
+    """A quoted operating assumption, never a document/evidence identity."""
+    kind: Literal['proposed_design']
+    assessment_scope_id: str
+    excerpt: str = Field(min_length=1, max_length=4000)
+
+
+class CriterionV14(Criterion):
+    design_basis: list[DesignBasis] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode='after')
+    def coherent(self):
+        if (self.state == 'completed') != (self.result is not None):
+            raise ValueError('Only completed evaluation has a business result')
+        if self.result in {'pass', 'fail'} and not (self.evidence_ids or self.design_basis):
+            raise ValueError('Pass and fail require external evidence or permitted design basis')
+        return self
+
+
 class Eligibility(StrEnum):
     FAIL = "fail"
     INCOMPLETE = "incomplete"

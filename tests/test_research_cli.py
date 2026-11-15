@@ -5,18 +5,21 @@ import json
 import os
 import stat
 import sys
+from pathlib import Path
 
 import httpx
 import psycopg
 import pytest
+from psycopg.types.json import Jsonb
 
 from ai_builder.evidence import ArtifactStore
 from ai_builder.fetch_transport import ControlledFetcher
-from ai_builder.pg_execution import execution_pool
+from ai_builder.config import load_config
+from ai_builder.pg_execution import acquire_lease, execution_pool
 from ai_builder.pg_ledger import PostgresLedger, digest
 from ai_builder.pg_migrate import migrate
-from ai_builder.pipeline import PROMPTS, PREFIX
-from ai_builder.research_scope import ResearchContext, create_research_run, run_research
+from ai_builder.pipeline import PROMPTS, PREFIX, prompt_bundle
+from ai_builder.research_scope import ResearchContext, _load_context, create_research_run, freeze_context, run_research
 from ai_builder.smoke import FixtureHTTP
 from ai_builder.source_documents import _html, _pdf, parse_document
 from ai_builder.source_research import ScopeSeed, SearchQueryPlan, SourceResearchPlan
@@ -63,7 +66,9 @@ class ResearchProviders:
                 LEFT JOIN app.scope_inputs s ON s.run_id=c.run_id
                 WHERE c.context->'plan'->'seed'->>'scope_id'=%s''', (self.context.plan.seed.scope_id,))).fetchone()
         assert row is not None
-        assert row['context_hash'] == digest(self.context.model_dump(mode='json'))
+        expected = {**self.context.model_dump(mode='json'), 'pipeline_prefix': PREFIX, 'pipeline_prompts': PROMPTS}
+        assert row['context_hash'] == digest(expected)
+        assert row['context'] == expected
         body = json.loads(request.content)
         if request.url.host == 'api.tavily.com':
             assert request.url.path == '/search'
@@ -115,6 +120,92 @@ def test_context_requires_both_tariffs_and_complete_role_settings():
     value['role_settings'].pop('verifier')
     with pytest.raises(ValueError, match='Every role'):
         ResearchContext.model_validate(value)
+
+
+def test_context_legacy_bytes_and_explicit_frozen_bundle(config):
+    legacy = context()
+    assert set(legacy.model_dump()) == {'schema_version', 'plan', 'openai_pricing', 'tavily_pricing',
+                                      'role_settings', 'purpose'}
+    assert ResearchContext.model_validate_json(legacy.model_dump_json()).model_dump_json() == legacy.model_dump_json()
+    frozen = freeze_context(config, legacy)
+    assert frozen.pipeline_prefix == PREFIX and frozen.pipeline_prompts == PROMPTS
+    assert legacy.pipeline_prefix is None
+    explicit = frozen.model_copy(update={'pipeline_prefix': 'Historical frozen prefix. '})
+    assert freeze_context(config, explicit).pipeline_prefix == explicit.pipeline_prefix
+    for invalid in ({'pipeline_prefix': 'prefix'}, {'parent_collection_id': 'parent'}, {'parent_run_id': 'run'}):
+        with pytest.raises(ValueError):
+            ResearchContext.model_validate({**legacy.model_dump(), **invalid})
+
+
+def test_followup_requires_existing_study_before_database(config):
+    followup = context().model_copy(update={'parent_collection_id': 'collection', 'parent_run_id': 'parent'})
+    with pytest.raises(ValueError, match='existing study_id'):
+        asyncio.run(create_research_run(None, config, followup, '25'))
+
+
+@needs_postgres
+def test_legacy_collection_prompt_recovery_and_followup_parent_integrity(config):
+    async def check():
+        await migrate(DSN)
+        async with execution_pool(DSN) as pool:
+            admin = PostgresLedger(pool)
+            study = await admin.create_study('US', '100')
+            parent_run = await admin.create_run(study, config)
+            coordinator = await admin.create_run(study, config)
+            collection = uid()
+            legacy = context()
+            legacy = legacy.model_copy(update={'plan': legacy.plan.model_copy(update={
+                'seed': legacy.plan.seed.model_copy(update={'base_model_id': uid()})})})
+            old_prefix = 'An immutable historical role prefix. '
+            frozen_collection = {**legacy.model_dump(mode='json'), 'config': config.model_dump(mode='json'),
+                                 'pipeline_prefix': old_prefix, 'pipeline_prompts': PROMPTS}
+            members = [{'model_id': legacy.plan.seed.base_model_id if index == 1 else uid(),
+                        'position': index, 'candidate': {'plan': legacy.plan.model_dump(mode='json')}}
+                       for index in range(1, 21)]
+            async with pool.connection() as conn, conn.transaction():
+                await conn.execute('''INSERT INTO app.collections
+                    (id,study_id,coordinator_run_id,context_hash,context,state,membership_hash,selected_count,frozen_at)
+                    VALUES (%s,%s,%s,%s,%s,'partial',%s,20,clock_timestamp())''',
+                    (collection, study, coordinator, digest(frozen_collection), Jsonb(frozen_collection), digest(members)))
+                for member in members:
+                    await conn.execute('''INSERT INTO app.collection_items
+                        (collection_id,model_id,position,candidate,run_id,state) VALUES (%s,%s,%s,%s,%s,'queued')''',
+                        (collection, member['model_id'], member['position'], Jsonb(member['candidate']),
+                         parent_run if member['position'] == 1 else None))
+                # Model the pre-v1.4 saved record directly; immutable rows are
+                # neither altered nor repaired during compatibility loading.
+                await conn.execute('INSERT INTO app.research_contexts(run_id,context_hash,context) VALUES (%s,%s,%s)',
+                                   (parent_run, digest(legacy.model_dump(mode='json')), Jsonb(legacy.model_dump(mode='json'))))
+            ledger = PostgresLedger(pool, parent_run, await acquire_lease(pool, parent_run, 'legacy-test'))
+            _, recovered, _ = await _load_context(ledger)
+            assert recovered.pipeline_prefix == old_prefix and recovered.pipeline_prompts == PROMPTS
+            async with pool.connection() as conn:
+                unchanged = await (await conn.execute('SELECT context,context_hash FROM app.research_contexts WHERE run_id=%s',
+                                                      (parent_run,))).fetchone()
+            assert unchanged == {'context': legacy.model_dump(mode='json'),
+                                 'context_hash': digest(legacy.model_dump(mode='json'))}
+            new_config = load_config(Path(__file__).parents[1] / 'config' / 'helpdesk-config.json')
+            seed = legacy.plan.seed.model_copy(update={'scope_id': uid(), 'variant_id': uid()})
+            followup = legacy.model_copy(update={'plan': legacy.plan.model_copy(update={'seed': seed}),
+                                                 'parent_collection_id': collection, 'parent_run_id': parent_run})
+            child = await create_research_run(pool, new_config, followup, study_id=study)
+            async with pool.connection() as conn:
+                row = await (await conn.execute('''SELECT r.study_id,c.context FROM app.runs r
+                    JOIN app.research_contexts c ON c.run_id=r.id WHERE r.id=%s''', (child,))).fetchone()
+            assert row['study_id'] == study
+            assert row['context']['pipeline_prefix'] == prompt_bundle('1.1')[0]
+            assert row['context']['parent_run_id'] == parent_run
+            other_study = await admin.create_study('US', '100')
+            with pytest.raises(ValueError, match='parent study and base model'):
+                await create_research_run(pool, new_config, followup, study_id=other_study)
+            wrong_seed = seed.model_copy(update={'base_model_id': 'not-a-member'})
+            wrong_model = followup.model_copy(update={'plan': followup.plan.model_copy(update={'seed': wrong_seed})})
+            with pytest.raises(ValueError, match='parent study and base model'):
+                await create_research_run(pool, new_config, wrong_model, study_id=study)
+            wrong_parent = followup.model_copy(update={'parent_collection_id': 'not-the-parent'})
+            with pytest.raises(Conflict, match='unique frozen parent'):
+                await create_research_run(pool, new_config, wrong_parent, study_id=study)
+    asyncio.run(check())
 
 
 @needs_postgres
@@ -212,7 +303,7 @@ def test_context_is_database_immutable_and_paused_resume_cannot_change_limits(co
                 run = await (await conn.execute('SELECT status,limit_micro,active_started_at FROM app.runs WHERE id=%s', (run_id,))).fetchone()
                 saved = await (await conn.execute('SELECT context FROM app.research_contexts WHERE run_id=%s', (run_id,))).fetchone()
             assert run == {'status': 'paused', 'limit_micro': 25_000_000, 'active_started_at': None}
-            assert saved['context'] == inputs.model_dump(mode='json')
+            assert saved['context'] == freeze_context(config, inputs).model_dump(mode='json')
             assert not (await PostgresLedger(pool).summary(run_id))['requests']
     asyncio.run(check())
 

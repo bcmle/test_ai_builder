@@ -14,7 +14,7 @@ from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from psycopg.types.json import Jsonb
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from .domain import Contract
 from .evidence import ArtifactStore
@@ -60,12 +60,30 @@ class SearchQueryPlan(FrozenContract):
 
 
 class SourceResearchPlan(FrozenContract):
-    schema_version: Literal['1'] = '1'
+    schema_version: Literal['1', '2'] = '1'
     seed: ScopeSeed
-    queries: tuple[SearchQueryPlan, ...] = Field(min_length=1, max_length=4)
-    max_new_reads: int = Field(default=6, ge=1, le=6, strict=True)
+    queries: tuple[SearchQueryPlan, ...] = Field(min_length=1, max_length=12)
+    max_new_reads: int = Field(default=6, ge=1, le=24, strict=True)
     acquisition_limits: FetchLimits = Field(default_factory=FetchLimits)
     parser_limits: ParserLimits = Field(default_factory=ParserLimits)
+    priority_primary_urls: tuple[str, ...] = Field(default=(), max_length=16)
+
+    @model_validator(mode='after')
+    def version_bounds(self):
+        if self.schema_version == '1' and (len(self.queries) > 4 or self.max_new_reads > 6
+                                            or self.priority_primary_urls):
+            raise ValueError('Version 1 permits four queries, six reads and no direct primary leads')
+        urls = [canonical_url(url) for url in self.priority_primary_urls]
+        if len(urls) != len(set(urls)):
+            raise ValueError('Primary source URLs must be distinct after canonicalization')
+        return self
+
+    @model_serializer(mode='wrap')
+    def serialize_compatible(self, handler):
+        value = handler(self)
+        if self.schema_version == '1':
+            value.pop('priority_primary_urls', None)
+        return value
 
     def fetch_limits(self):
         return self.acquisition_limits
@@ -150,11 +168,29 @@ async def _initialize(ledger, plan):
         if not row:
             await conn.execute('INSERT INTO app.source_research(run_id,scope_id,plan_hash,plan) VALUES (%s,%s,%s,%s)',
                                (ledger.run_id, plan.seed.scope_id, digest(value), Jsonb(value)))
+            if plan.priority_primary_urls:
+                # Operator-supplied leads are not search results or evidence.
+                # This distinct, already-resolved queue uses no provider receipt;
+                # every URL still passes through the ordinary controlled reader.
+                primary_id = uid()
+                await conn.execute('''INSERT INTO app.source_queries
+                    (id,run_id,scope_id,query_index,operation_key,query,state,completed_at)
+                    VALUES (%s,%s,%s,0,%s,%s,'succeeded',clock_timestamp())''',
+                    (primary_id, ledger.run_id, plan.seed.scope_id,
+                     'source-primary:' + digest({'scope': plan.seed.scope_id}),
+                     Jsonb({'kind': 'primary_urls', 'urls': list(plan.priority_primary_urls)})))
+                for rank, url in enumerate(plan.priority_primary_urls, 1):
+                    await conn.execute('''INSERT INTO app.source_results(id,query_id,result_rank,url)
+                        VALUES (%s,%s,%s,%s)''', (uid(), primary_id, rank, url))
+                await ledger.event(conn, ledger.run_id, 'source_primary_urls_saved',
+                                   {'scope_id': plan.seed.scope_id, 'query_id': primary_id,
+                                    'url_count': len(plan.priority_primary_urls)})
             for index, query in enumerate(plan.queries):
                 operation_key = 'source-search:' + digest({'scope': plan.seed.scope_id, 'index': index})
                 await conn.execute('''INSERT INTO app.source_queries(id,run_id,scope_id,query_index,operation_key,query)
                                       VALUES (%s,%s,%s,%s,%s,%s)''',
-                                   (uid(), ledger.run_id, plan.seed.scope_id, index, operation_key,
+                                   (uid(), ledger.run_id, plan.seed.scope_id,
+                                    index + int(bool(plan.priority_primary_urls)), operation_key,
                                     Jsonb(query.model_dump(mode='json'))))
             await ledger.event(conn, ledger.run_id, 'source_plan_saved', {'scope_id': plan.seed.scope_id,
                                                                         'plan_hash': digest(value)})

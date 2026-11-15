@@ -86,3 +86,30 @@ zero-call replay. Linux CI exercises the resource-limited production subprocess.
 No live provider acceptance has been inferred from these tests.
 
 API contract reference: [Tavily Search](https://docs.tavily.com/documentation/api-reference/endpoint/search).
+
+## Bounded recovery and focused analysis (v1.4)
+
+Existing technical failures can be explicitly selected without re-running the other
+collection members or changing frozen inputs:
+
+```sh
+python -m ai_builder.collection --resume-collection COLLECTION_ID --retry-failed
+# Add --retry-model MODEL_ID to select one failed member.
+python -m ai_builder.focused_research --parent-collection COLLECTION_ID --model-id MODEL_ID
+```
+
+The focused command uses the packaged Helpdesk plan only for its matching base ID,
+creates one linked run in the original study, and reuses that run on subsequent
+invocations. Saved provider tariffs and cumulative accounting remain in PostgreSQL.
+It publishes a separate scoped snapshot and homepage link; the main twenty-model
+collection and its ranking stay separate. `--retry-paused` explicitly resumes a
+paused follow-up only when its existing limits allow it and no uncertain external
+operation or active owner remains. It does not increase any budget.
+
+Role outputs undergo schema and semantic validation before acceptance. An invalid
+output receives at most two metered corrections; every saved raw response and
+correction is replayable. Refusals, authentication/quota errors and unknown billing
+are not disguised as formatting errors. Original invalid receipts remain in the
+private audit. Document references and conditional proposed-design references are
+distinct; lawful activity, special licensing, recurring revenue and comparable
+valuation still require documentary evidence.

@@ -1,0 +1,10 @@
+{% if followup %}
+{% set focused_model = followup.models[0] %}
+<aside class="followup-callout" aria-label="Focused analysis">
+  <div><span class="eyebrow">A closer look · {{ followup.scenario.jurisdiction }}</span>
+    <h3>{{ focused_model.title }}</h3>
+    <p>A focused launch scenario, with its own evidence and conditions. {{ status_labels[focused_model.status] }} · {{ followup.published_at|date }}.</p>
+  </div>
+  <a class="button button-small" href="/runs/{{ followup.run_id }}/models/{{ focused_model.id }}">Read the focused analysis <span aria-hidden="true">↗</span></a>
+</aside>
+{% endif %}

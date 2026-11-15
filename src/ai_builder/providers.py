@@ -23,9 +23,18 @@ from .pg_ledger import digest
 
 
 class ProviderFailure(Exception):
-    def __init__(self, code, retryable=False):
+    def __init__(self, code, retryable=False, *, candidate=None, diagnostics=None):
         self.code, self.retryable = code, retryable
+        # Private correction inputs, never included in the exception message/public code.
+        self.candidate, self.diagnostics = candidate, diagnostics or []
         super().__init__(code)  # Never include provider response bodies/keys in errors.
+
+
+def validation_diagnostics(error):
+    if isinstance(error, ValidationError):
+        return [{'code': item['type'], 'path': list(item['loc']), 'message': item['msg'][:600]}
+                for item in error.errors(include_url=False, include_context=False, include_input=False)[:30]]
+    return [{'code': 'semantic_validation', 'path': [], 'message': str(error)[:600]}]
 
 
 async def public_url(url: str) -> str:
@@ -207,8 +216,6 @@ class OpenAIAdapter:
                                 reasoning_tokens=raw["output_tokens_details"]["reasoning_tokens"])
             return tariff.token_cost(tokens), tokens.model_dump()
         data = await self.transport.post("responses", self.key, payload, upper, usage)
-        if data.get("status") != "completed":
-            raise ProviderFailure("incomplete_model_response")
         chunks = []
         for item in data.get("output", []):
             for content in item.get("content", []):
@@ -216,10 +223,18 @@ class OpenAIAdapter:
                     raise ProviderFailure("model_refusal")
                 if content.get("type") == "output_text":
                     chunks.append(content["text"])
+        candidate = ''.join(chunks)
+        if len(candidate) > 131072:
+            raise ProviderFailure('model_output_too_large')
+        if data.get('status') != 'completed':
+            raise ProviderFailure('incomplete_model_response', candidate=candidate,
+                                  diagnostics=[{'code': 'incomplete_model_response', 'path': [],
+                                                'message': 'Return a concise complete result within the output limit.'}])
         try:
-            return output_type.model_validate_json("".join(chunks))
-        except ValidationError:
-            raise ProviderFailure("invalid_structured_output") from None
+            return output_type.model_validate_json(candidate)
+        except ValidationError as error:
+            raise ProviderFailure('invalid_structured_output', candidate=candidate,
+                                  diagnostics=validation_diagnostics(error)) from None
 
 
 class TavilyAdapter:

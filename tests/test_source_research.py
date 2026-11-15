@@ -99,6 +99,55 @@ def test_source_plan_is_separate_bounded_immutable_contract(config):
     assert canonical_url('https://example.com/path?q=2') != canonical_url('https://example.com/path?q=1')
 
 
+def test_v2_plan_bounds_primary_urls_and_legacy_serialization():
+    legacy = plan()
+    expected = {name: getattr(legacy, name) for name in (
+        'schema_version', 'seed', 'queries', 'max_new_reads', 'acquisition_limits', 'parser_limits')}
+    assert 'priority_primary_urls' not in legacy.model_dump(mode='json')
+    assert set(legacy.model_dump()) == set(expected)
+    assert SourceResearchPlan.model_validate_json(legacy.model_dump_json()).model_dump_json() == legacy.model_dump_json()
+    v2 = SourceResearchPlan.model_validate({**legacy.model_dump(), 'schema_version': '2',
+        'queries': [SearchQueryPlan(query=f'q-{i}') for i in range(12)], 'max_new_reads': 24,
+        'priority_primary_urls': ['https://example.com/primary']})
+    assert len(v2.queries) == 12 and v2.max_new_reads == 24
+    for invalid in ({'queries': list(v2.queries) + [v2.queries[0]]}, {'max_new_reads': 25},
+                    {'priority_primary_urls': ['https://example.com/a', 'https://EXAMPLE.com/a#same']},
+                    {'priority_primary_urls': ['file:///private/secret']}, {'schema_version': '1'}):
+        with pytest.raises(ValidationError):
+            SourceResearchPlan.model_validate({**v2.model_dump(), **invalid})
+
+
+@database
+def test_primary_leads_precede_search_reads_use_same_cap_and_replay(config, tmp_path):
+    async def check():
+        await migrate(DSN)
+        async with execution_pool(DSN) as pool:
+            ledger, _, _ = await setup(pool, config)
+            value = SourceResearchPlan.model_validate({**plan().model_dump(), 'schema_version': '2',
+                'queries': [SearchQueryPlan(query=f'q-{i}', max_results=2) for i in range(12)],
+                'priority_primary_urls': ['https://example.com/a', 'https://example.com/b'],
+                'max_new_reads': 2})
+            harness = Harness(ledger, ArtifactStore(tmp_path), {
+                'q-0': [{'url': 'https://example.com/c'}, {'url': 'https://example.com/a#same'}]})
+            prepared = await harness.prepare(value)
+            assert harness.fetch_calls == ['https://example.com/a', 'https://example.com/b']
+            assert len(harness.search_calls) == 12  # Direct primary leads are not Tavily calls.
+            assert len(prepared.scope.documents) == 2
+            assert 'plan_read_limit' in {gap.code for gap in prepared.gaps}
+            assert (await harness.prepare(value)) == prepared
+            assert len(harness.fetch_calls) == 2 and len(harness.search_calls) == 12
+            async with pool.connection() as conn:
+                queries = await (await conn.execute('SELECT query_index,query FROM app.source_queries WHERE run_id=%s ORDER BY query_index',
+                                                    (ledger.run_id,))).fetchall()
+                event = await (await conn.execute("SELECT payload FROM app.events WHERE run_id=%s AND kind='source_primary_urls_saved'",
+                                                  (ledger.run_id,))).fetchone()
+            assert len(queries) == 13 and queries[-1]['query_index'] == 12
+            assert queries[0]['query']['kind'] == 'primary_urls'
+            assert event['payload']['url_count'] == 2
+            await harness.close()
+    asyncio.run(check())
+
+
 @database
 def test_search_to_snapshots_scope_replay_and_distinct_identities(config, tmp_path):
     async def check():

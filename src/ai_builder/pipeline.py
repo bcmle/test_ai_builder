@@ -7,15 +7,15 @@ from datetime import datetime, timezone
 from typing import Literal, TypedDict
 
 from langgraph.graph import StateGraph, START, END
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from .config import Configuration
-from .domain import (Contract, Criterion, Claim, HandoffClaim, Risk, Factor, Interval, eligibility,
+from .domain import (Contract, Criterion, CriterionV14, Claim, HandoffClaim, Risk, Factor, Interval, eligibility,
                      handoff, reconcile, score)
 from .pg_execution import FencedPostgresSaver
 from .pg_ledger import digest
 from .store import Conflict
-from .providers import OpenAIAdapter, MeteredHTTP
+from .providers import OpenAIAdapter, MeteredHTTP, ProviderFailure, validation_diagnostics
 
 
 class Document(Contract):
@@ -37,6 +37,10 @@ class ScopePacket(Contract):
 
 class Research(Contract):
     criteria: list[Criterion]
+
+
+class ResearchV14(Contract):
+    criteria: list[CriterionV14]
 
 
 class Applicability(Contract):
@@ -109,11 +113,63 @@ PROMPTS = {
 }
 
 
+V14_PREFIX = PREFIX.replace(
+    'Use only supplied evidence; missing information remains unknown.',
+    'External factual claims use only supplied documents; missing external information remains unknown. '
+    'A proposed operating design is an explicitly conditional assumption, never an external source.')
+V14_PROMPTS = dict(PROMPTS)
+V14_PROMPTS['research'] += (
+    ' Every criterion state is completed with result pass/fail/unknown. evidence_ids contains ONLY document evidence_id values; '
+    'never put assessment_scope_id or snapshot_id there. For criteria explicitly allowing design basis, quote the proposed '
+    'operating design in design_basis with kind proposed_design, the exact assessment_scope_id and an exact excerpt from '
+    'neutral_model_description. A design-based conclusion is conditional on operating that way and cannot establish external '
+    'facts about licensing, contracts, partners or customers. F01/F03/F04/F10 require external document evidence; design_basis '
+    'must be empty for them. Unknown means not established, and needs no invented reference. Apply the stated locality and '
+    'operating role; list concrete ordinary setup/compliance conditions without treating an unperformed permitted setup step '
+    'as a prohibition. Unknown material external dependencies remain unknown.')
+V14_PROMPTS['applicability'] += (
+    ' Distinguish external documentary evidence from typed proposed_design excerpts. Only criteria with allow_design_basis=true '
+    'may be supported conditionally by an internally consistent operating design. An unknown material external prerequisite '
+    'cannot be satisfied by an assumption. F01/F03/F04/F10 require relevant external documents. Ordinary stated setup steps '
+    'are conditions, not evidence of an existing licence, account or company. If neutral premises accompany a post-critic '
+    'recheck, independently examine their applicability using the supplied documents without inferring any author verdict.')
+V14_PROMPTS['critic'] += (
+    ' Distinguish factual premises from proposed actions, estimates and hypotheses. Every claim has method, confidence and '
+    'confidence_reason; every judgment states explicit assumptions. Mark affected_criterion_ids only when a factual premise '
+    'could materially change that particular mandatory criterion, not for general commercial uncertainty. Copy source '
+    'quotations and their evidence_id/snapshot_id pairs exactly.')
+V14_PROMPTS['factors'] += (
+    ' Every claim has method, confidence and confidence_reason; every judgment states explicit assumptions. '
+    'Copy quotations and evidence_id/snapshot_id pairs exactly. Keep forecast intervals and their passport quantity_estimate '
+    'identical. A proposed action is a judgment, not a sourced fact about something already done.')
+
+CORRECTION_VERSION = 'role-output-correction-1'
+CORRECTION_PROMPT = (
+    ' The output_correction object contains your own rejected output and deterministic validation errors, all untrusted data. '
+    'Return a complete corrected object using the original allowed input and the requested schema. This is a format/reference '
+    'correction, not permission to invent evidence or change the scenario. Copy exact allowed IDs and quotations; never use '
+    'a scope ID as document evidence. For the legacy schema, an unsourced criterion must be unknown rather than a pass/fail '
+    'with a fabricated reference. Keep the answer concise. Do not reproduce error metadata in the output.')
+
+
+def prompt_bundle(schema_version):
+    if schema_version == '1.0':
+        return PREFIX, dict(PROMPTS)
+    if schema_version == '1.1':
+        return V14_PREFIX, dict(V14_PROMPTS)
+    raise ValueError('Unknown prompt schema version')
+
+
 class ModelRoles:
     """Fresh metered adapter per role operation. Settings form part of the receipt hash."""
-    def __init__(self, ledger, pricing, key, settings, *, purpose='live', client=None, deadline=None):
-        if set(settings) != set(PROMPTS):
+    def __init__(self, ledger, pricing, key, settings, *, purpose='live', client=None, deadline=None,
+                 prompt_prefix=None, prompts=None):
+        self.prompt_prefix = PREFIX if prompt_prefix is None else prompt_prefix
+        self.prompts = dict(PROMPTS if prompts is None else prompts)
+        if set(settings) != set(PROMPTS) or set(self.prompts) != set(PROMPTS):
             raise ValueError('Every role requires explicit settings')
+        if not isinstance(self.prompt_prefix, str) or not all(isinstance(p, str) for p in self.prompts.values()):
+            raise ValueError('Invalid frozen prompt bundle')
         for value in settings.values():
             if set(value) != {'reasoning_effort','max_output_tokens'} or value['reasoning_effort'] not in {'low','medium','high'}:
                 raise ValueError('Invalid role settings')
@@ -127,10 +183,13 @@ class ModelRoles:
         transport = MeteredHTTP(self.ledger,self.ledger.run_id,role,self.pricing,self.purpose,
                                 client=self.client,deadline=self.deadline,operation_key=operation_key)
         adapter = OpenAIAdapter(transport,self.key,reasoning_effort=setting['reasoning_effort'])
-        return await adapter.generate(PREFIX+PROMPTS[role],packet,schema,setting['max_output_tokens'])
+        system = self.prompt_prefix + self.prompts[role]
+        if 'output_correction' in packet:
+            system += CORRECTION_PROMPT
+        return await adapter.generate(system,packet,schema,setting['max_output_tokens'])
 
     def version(self):
-        return digest({'prompts':PROMPTS,'prefix':PREFIX,'settings':self.settings,
+        return digest({'prompts':self.prompts,'prefix':self.prompt_prefix,'settings':self.settings,
                        'pricing':self.pricing.model_dump(mode='json'),'purpose':self.purpose})
 
 
@@ -169,6 +228,9 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
                 neutral_model_description=scope.neutral_model_description,launch_context=config.scenario.model_dump(mode='json'))
     documents = [d.model_dump(mode='json') for d in scope.documents]
     criteria_ids = {c.id for c in config.criteria}
+    criterion_type = CriterionV14 if config.schema_version == '1.1' else Criterion
+    research_type = ResearchV14 if config.schema_version == '1.1' else Research
+    rules = {c.id: c for c in config.criteria}
 
     def validate_claims(claims):
         ids = {c.claim_id for c in claims}
@@ -189,41 +251,113 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
                 allowed_urls.add(doc.url)
             if not set(c.source_urls)<=allowed_urls:
                 raise ValueError('Unregistered claim URL')
+            if config.schema_version == '1.1':
+                if not c.method or not c.confidence or not c.confidence_reason:
+                    raise ValueError('New claim requires method, confidence and confidence reason')
+                if c.kind == 'judgment' and not c.assumptions:
+                    raise ValueError('Judgment requires explicit assumptions')
+        by_id, visited, visiting = {c.claim_id:c for c in claims}, set(), set()
+        def visit(identifier):
+            if identifier in visiting:
+                raise ValueError('Cyclic claim calculation')
+            if identifier in visited:
+                return
+            visiting.add(identifier)
+            for dependency in by_id[identifier].input_claim_ids:
+                visit(dependency)
+            visiting.remove(identifier)
+            visited.add(identifier)
+        for identifier in ids:
+            visit(identifier)
 
-    async def call(role, packet, schema, suffix=''):
-        h = digest({'input':packet,'scope':input_hash,'role':role,'suffix':suffix})
-        key = scope.scope_id+':'+role+':'+h
-        cached = await ledger.receipt(scope.scope_id,role,key,h)
-        if cached is not None:
-            return schema.model_validate(cached)
-        async with ledger.locked(ledger.run_id, fenced=True) as (conn,_,__):
-            await ledger.event(conn,ledger.run_id,'role_input',{'scope_id':scope.scope_id,'role':role,'operation_key':key,'prompt_version':version,'input':packet})
-        result = await roles.generate(role,packet,schema,key)
-        result = schema.model_validate(result)
-        await ledger.receipt(scope.scope_id,role,key,h,result.model_dump(mode='json'))
-        return result
+    async def call(role, packet, schema, suffix='', validator=None):
+        """Replay immutable candidates; only validated outputs receive new accepted receipts."""
+        attempt_packet, candidate, diagnostics = packet, None, []
+        original_hash = digest(packet)
+        for attempt in range(3):
+            attempt_suffix = suffix if not attempt else f'{suffix}:{CORRECTION_VERSION}:{attempt}'
+            if attempt:
+                usage = await ledger.summary(ledger.run_id)
+                if usage['unknown_micro'] or usage['reserved_micro']:
+                    raise ProviderFailure('repair_blocked_by_unresolved_usage')
+                attempt_packet = {**packet, 'output_correction': {
+                    'policy_version': CORRECTION_VERSION, 'attempt': attempt,
+                    'original_input_hash': original_hash, 'invalid_output': candidate,
+                    'validation_errors': diagnostics}}
+            h = digest({'input':attempt_packet,'scope':input_hash,'role':role,'suffix':attempt_suffix})
+            key = scope.scope_id+':'+role+':'+h
+            cached = await ledger.receipt(scope.scope_id,role,key,h)
+            candidate = cached
+            try:
+                if cached is not None:
+                    result = schema.model_validate(cached)
+                else:
+                    async with ledger.locked(ledger.run_id, fenced=True) as (conn,_,__):
+                        await ledger.event(conn,ledger.run_id,'role_input',{
+                            'scope_id':scope.scope_id,'role':role,'operation_key':key,'prompt_version':version,
+                            'correction_attempt':attempt,'input':attempt_packet})
+                    generated = await roles.generate(role,attempt_packet,schema,key)
+                    candidate = generated.model_dump(mode='json') if hasattr(generated, 'model_dump') else generated
+                    result = schema.model_validate(candidate)
+                if validator is not None:
+                    validator(result)
+            except ProviderFailure as error:
+                if error.code not in {'invalid_structured_output', 'incomplete_model_response'} or error.candidate is None:
+                    raise
+                candidate, diagnostics = error.candidate, error.diagnostics
+                failure = error
+            except (ValueError, ValidationError) as error:
+                if candidate is None:
+                    raise
+                diagnostics, failure = validation_diagnostics(error), error
+            else:
+                if cached is None:
+                    await ledger.receipt(scope.scope_id,role,key,h,result.model_dump(mode='json'))
+                return result
+            async with ledger.locked(ledger.run_id, fenced=True) as (conn,_,__):
+                await ledger.event(conn,ledger.run_id,'role_output_rejected',{
+                    'scope_id':scope.scope_id,'role':role,'operation_key':key,
+                    'correction_attempt':attempt,'policy_version':CORRECTION_VERSION,
+                    'candidate_hash':digest(candidate),'legacy_receipt_rejected':cached is not None,
+                    'errors':diagnostics})
+            if attempt == 2:
+                raise failure
+        raise AssertionError('Unreachable correction loop')
 
-    async def research(state):
-        result = await call('research',{**base,'documents':documents,'criteria':[c.model_dump() for c in config.criteria]},Research)
+    def validate_research(result):
         eligibility(result.criteria,list(criteria_ids))
         if {c.criterion_id for c in result.criteria} != criteria_ids:
             raise ValueError('Missing required criterion')
         for c in result.criteria:
             if not set(c.evidence_ids)<=docs.keys():
-                raise ValueError('Unknown criterion evidence')
+                raise ValueError('Unknown criterion evidence; evidence_ids accepts document evidence_id only, never assessment_scope_id')
+            for basis in getattr(c, 'design_basis', []):
+                if (not rules[c.criterion_id].allow_design_basis or basis.assessment_scope_id != scope.scope_id
+                        or basis.excerpt not in scope.neutral_model_description):
+                    raise ValueError('Design basis is not permitted or does not quote this frozen operating design')
+
+    async def research(state):
+        result = await call('research',{**base,'documents':documents,'criteria':[c.model_dump() for c in config.criteria]},
+                            research_type,validator=validate_research)
         return {'research':result.model_dump(mode='json')}
 
+    def validate_applicability(result, selected):
+        if len(result.items) != len(selected) or {item.criterion_id for item in result.items} != selected:
+            raise ValueError('Applicability must cover every requested criterion exactly once')
+
     async def applicability(state):
-        initial = Research.model_validate(state['research']).criteria
+        initial = research_type.model_validate(state['research']).criteria
         selected = {c.criterion_id for c in initial if c.result in {'pass','fail'}}
         reviewed = {}
         if selected:
             packet = {**base, 'criteria_rules':[c.model_dump() for c in config.criteria if c.id in selected],
                       'documents':documents,
                       'evidence_by_criterion':{c.criterion_id:c.evidence_ids for c in initial if c.criterion_id in selected}}
-            result = await call('applicability',packet,ApplicabilityBatch)
-            if len(result.items) != len(selected) or {item.criterion_id for item in result.items} != selected:
-                raise ValueError('Applicability must cover every requested criterion exactly once')
+            if config.schema_version == '1.1':
+                packet['design_basis_by_criterion'] = {c.criterion_id:[b.model_dump(mode='json') for b in c.design_basis]
+                                                       for c in initial if c.criterion_id in selected}
+            result = await call('applicability',packet,ApplicabilityBatch,
+                                validator=lambda value: validate_applicability(value, selected))
             reviewed = {item.criterion_id:item for item in result.items}
         checked = []
         for c in initial:
@@ -237,9 +371,16 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
         return {'criteria':[c.model_dump(mode='json') for c in checked], 'eligibility':eligibility(checked,list(criteria_ids)).value}
 
     async def critic(state):
-        result = await call('critic',{**base,'documents':documents,'criteria_rules':[c.model_dump() for c in config.criteria]},Critique)
-        validate_claims(result.claims)
+        result = await call('critic',{**base,'documents':documents,'criteria_rules':[c.model_dump() for c in config.criteria]},
+                            Critique,validator=validate_critique)
         return {'critique':result.model_dump(mode='json')}
+
+    def validate_critique(result):
+        validate_claims(result.claims)
+        ids = {c.claim_id for c in result.claims}
+        if any(not set(r.premise_claim_ids)<=ids for r in result.risks):
+            raise ValueError('Risk refers to an unknown claim')
+        handoff(result.claims,result.risks,{d.snapshot_id for d in scope.documents},criteria_ids)
 
     async def neutral(state):
         critique = Critique.model_validate(state['critique'])
@@ -252,29 +393,49 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
             if gate.status=='accept':
                 return {'handoff':[c.model_dump(mode='json') for c in claims],'neutral':True,'critique':critique.model_dump(mode='json')}
             if attempt==0:
-                critique = await call('repair',{**base,'documents':documents,'critique':critique.model_dump(mode='json'),'reason':gate.reason},Critique)
+                critique = await call('repair',{**base,'documents':documents,'critique':critique.model_dump(mode='json'),'reason':gate.reason},
+                                      Critique,validator=validate_critique)
         return {'neutral':False,'eligibility':'needs_review'}
 
     async def verify(state):
         # No critique, confidence, impact, score, service gate result or shared chat.
         allowed = {ref['evidence_id'] for c in state['handoff'] for ref in c['evidence_refs']}
         packet = {**base,'claims':state['handoff'],'documents':[docs[i].model_dump(mode='json') for i in sorted(allowed)]}
-        result = await call('verifier',packet,Verification)
-        if len({v.claim_id for v in result.items})!=len(result.items) or {v.claim_id for v in result.items}!={c['claim_id'] for c in state['handoff']}:
-            raise ValueError('Verification must cover every handed-off claim exactly once')
-        for v in result.items:
-            if not set(v.evidence_ids)<=allowed or (v.status in {'supported','refuted','mixed'} and not v.evidence_ids):
-                raise ValueError('Verification evidence missing or outside allowed scope')
+        def validate_verification(result):
+            if len({v.claim_id for v in result.items})!=len(result.items) or {v.claim_id for v in result.items}!={c['claim_id'] for c in state['handoff']}:
+                raise ValueError('Verification must cover every handed-off claim exactly once')
+            for v in result.items:
+                if not set(v.evidence_ids)<=allowed or (v.status in {'supported','refuted','mixed'} and not v.evidence_ids):
+                    raise ValueError('Verification evidence missing or outside allowed scope')
+        result = await call('verifier',packet,Verification,validator=validate_verification)
         return {'verification':result.model_dump(mode='json')}
 
     async def reconciliation(state):
         critique = Critique.model_validate(state['critique'])
         statuses = {v['claim_id']:v['status'] for v in state['verification']['items']}
         affected = {criterion for c in critique.claims if c.affected_criterion_ids for criterion in c.affected_criterion_ids}
-        results = [Criterion.model_validate(c) for c in state['criteria']]
+        results = [criterion_type.model_validate(c) for c in state['criteria']]
+        rechecked = {}
+        if affected and config.schema_version == '1.1':
+            packet = {**base, 'criteria_rules':[c.model_dump() for c in config.criteria if c.id in affected],
+                      'documents':documents, 'claims':state['handoff'],
+                      'evidence_by_criterion':{c.criterion_id:c.evidence_ids for c in results if c.criterion_id in affected},
+                      'design_basis_by_criterion':{c.criterion_id:[b.model_dump(mode='json') for b in c.design_basis]
+                                                   for c in results if c.criterion_id in affected}}
+            reviewed = await call('applicability',packet,ApplicabilityBatch,'post-critic',
+                                  validator=lambda value: validate_applicability(value, affected))
+            rechecked = {item.criterion_id:item for item in reviewed.items}
         for c in results:
             if c.criterion_id in affected:
-                c.result,c.reason = 'unknown','Mandatory criterion must be reassessed after a critic claim affects it'
+                if c.criterion_id in rechecked:
+                    checked = rechecked[c.criterion_id]
+                    status = {'supports_pass':'pass', 'supports_fail':'fail', 'insufficient':'unknown'}[checked.status]
+                    if c.criterion_id == 'F10' and status == 'fail':
+                        status = 'unknown'
+                    c.result,c.reason = status,'Independent criterion recheck: '+checked.reason
+                    c.confidence,c.confidence_reason = None,None
+                else:
+                    c.result,c.reason = 'unknown','Mandatory criterion must be reassessed after a critic claim affects it'
         return {'reconciliation':{r.risk_id:reconcile(r,statuses) for r in critique.risks},
                 'criteria':[c.model_dump(mode='json') for c in results],'eligibility':eligibility(results,list(criteria_ids)).value}
 
@@ -282,21 +443,22 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
         packet = {**base,'criteria':state['criteria'],'claims':state['handoff'],'verification':state['verification'],
                   'risks':state['critique']['risks'],'risk_assessments':state['reconciliation'],
                   'rubrics':[f.model_dump(mode='json') for f in config.factors],'documents':documents}
-        result = await call('factors',packet,Factors)
-        validate_claims(result.claims)
-        by_id = {c.claim_id:c for c in result.claims}
-        if set(by_id) & {c['claim_id'] for c in state['critique']['claims']}:
-            raise ValueError('Factor claim IDs must be distinct from critic claims')
-        if {f.factor_id for f in result.factors}!={f.id for f in config.factors} or len(result.factors)!=5:
-            raise ValueError('Factor coverage mismatch')
-        for f in result.factors:
-            if not set(f.claim_ids)<=by_id.keys() or (f.value is not None and not f.claim_ids):
-                raise ValueError('Factor needs claim passport')
-        for quantity, identifier in [(result.days,result.days_claim_id),(result.cost,result.cost_claim_id)]:
-            if quantity is not None and (identifier not in by_id or by_id[identifier].quantity_estimate!=quantity):
-                raise ValueError('Quantity needs matching claim passport')
-        if result.resources_claim_id not in by_id or not set(result.test_plan_claim_ids)<=by_id.keys():
-            raise ValueError('Resource/test plan passport missing')
+        def validate_factors(result):
+            validate_claims(result.claims)
+            by_id = {c.claim_id:c for c in result.claims}
+            if set(by_id) & {c['claim_id'] for c in state['critique']['claims']}:
+                raise ValueError('Factor claim IDs must be distinct from critic claims')
+            if {f.factor_id for f in result.factors}!={f.id for f in config.factors} or len(result.factors)!=5:
+                raise ValueError('Factor coverage mismatch')
+            for f in result.factors:
+                if not set(f.claim_ids)<=by_id.keys() or (f.value is not None and not f.claim_ids):
+                    raise ValueError('Factor needs claim passport')
+            for quantity, identifier in [(result.days,result.days_claim_id),(result.cost,result.cost_claim_id)]:
+                if quantity is not None and (identifier not in by_id or by_id[identifier].quantity_estimate!=quantity):
+                    raise ValueError('Quantity needs matching claim passport')
+            if result.resources_claim_id not in by_id or not set(result.test_plan_claim_ids)<=by_id.keys():
+                raise ValueError('Resource/test plan passport missing')
+        result = await call('factors',packet,Factors,validator=validate_factors)
         return {'factors':result.model_dump(mode='json')}
 
     async def factor_validation(state):
@@ -307,12 +469,13 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
         allowed = {ref.evidence_id for c in claims for ref in c.evidence_refs}
         packet = {**base, 'claims':[c.model_dump(mode='json') for c in neutral_claims],
                   'documents':[docs[i].model_dump(mode='json') for i in sorted(allowed)]}
-        result = await call('verifier',packet,Verification,'factor-premises')
-        if len(result.items) != len(claims) or {v.claim_id for v in result.items} != {c.claim_id for c in claims}:
-            raise ValueError('Verification must cover every factor claim exactly once')
-        for item in result.items:
-            if not set(item.evidence_ids) <= allowed or (item.status in {'supported','refuted','mixed'} and not item.evidence_ids):
-                raise ValueError('Factor verification evidence outside scope or missing')
+        def validate_factor_verification(result):
+            if len(result.items) != len(claims) or {v.claim_id for v in result.items} != {c.claim_id for c in claims}:
+                raise ValueError('Verification must cover every factor claim exactly once')
+            for item in result.items:
+                if not set(item.evidence_ids) <= allowed or (item.status in {'supported','refuted','mixed'} and not item.evidence_ids):
+                    raise ValueError('Factor verification evidence outside scope or missing')
+        result = await call('verifier',packet,Verification,'factor-premises',validator=validate_factor_verification)
         return {'factor_verification':result.model_dump(mode='json')}
 
     async def card(state):
