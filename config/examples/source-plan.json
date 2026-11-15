@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "seed": {
+    "scope_id": "example-invoice-software-us",
+    "base_model_id": "invoice-software",
+    "variant_id": "small-service-businesses-us",
+    "neutral_model_description": "Subscription invoicing software for small service businesses in the United States; customer funds are processed by an external payment operator. Example scope, not a validated business conclusion."
+  },
+  "queries": [
+    {"query": "US small business invoicing software subscription pricing", "max_results": 5, "advanced": false, "domains": []},
+    {"query": "invoicing software company valuation investor announcement", "max_results": 5, "advanced": false, "domains": []}
+  ],
+  "max_new_reads": 6
+}

@@ -1,0 +1,35 @@
+name: Download private research result
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  download:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: aeza-technical
+    steps:
+      - name: Download encrypted report
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_KEY: ${{ secrets.AEZA_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.AEZA_KNOWN_HOSTS }}
+        run: |
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$DEPLOY_PORT" =~ ^[0-9]+$ ]]
+          test -n "$DEPLOY_KEY" && test -n "$KNOWN_HOSTS"
+          umask 077
+          install -d -m 700 "$RUNNER_TEMP/research-access" "$RUNNER_TEMP/research-result"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/research-access/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/research-access/known_hosts"
+          trap 'rm -f "$RUNNER_TEMP/research-access/key"' EXIT
+          ssh -i "$RUNNER_TEMP/research-access/key" -p "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/research-access/known_hosts" -o ConnectTimeout=15 "ai-deploy@$DEPLOY_HOST" 'cat /var/lib/test-ai-builder/export/first-live.html.age' > "$RUNNER_TEMP/research-result/first-live.html.age"
+          test -s "$RUNNER_TEMP/research-result/first-live.html.age"
+      - name: Save encrypted result
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: first-live-research
+          path: ${{ runner.temp }}/research-result/first-live.html.age
+          if-no-files-found: error
+          retention-days: 7

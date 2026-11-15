@@ -14,5 +14,6 @@ def render_report(scope, state, usage, *, mode):
                     autoescape=select_autoescape(['html']))
     env.filters['source_url']=source_url
     env.filters['money']=lambda micro:f'${micro/1000000:,.4f}'
-    state={'criteria':[],'critique':None,'verification':{'items':[]},'reconciliation':{},**state}
+    state={'criteria':[],'critique':None,'verification':{'items':[]},'reconciliation':{},
+           'source_metadata':{},'source_gaps':[],**state}
     return env.get_template('report.html').render(scope=scope.model_dump(mode='json'),state=state,usage=usage,mode=mode)

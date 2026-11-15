@@ -186,3 +186,23 @@ The user explicitly deferred the Mac SSH-tunnel viewing check. It remains outsta
 not a passed acceptance test. Live discovery/worker, evidence/manual-review completion,
 live assessments and public product access remain subsequent stages. This release does
 not claim complete A59/A60 or product acceptance.
+
+## Milestone 5 — one-model source acquisition
+
+Tavily discovery now feeds controlled HTTP reads, Trafilatura/pypdf extraction,
+immutable source artifacts and the existing single-model graph. PostgreSQL keeps
+search order, dispositions, read reservations, snapshots and frozen run inputs.
+Search snippets never enter analytical evidence. Interrupted requests retain their
+receipts/reservations; completed reports replay without new provider requests.
+
+The user prioritised one visible live card before catalogue, permanent worker and
+complete owner/public UI work. The initial scheduling-software scope is a test of
+the working path, not a preselected passing investment recommendation. Failed or
+unknown criteria remain visible and do not receive a final ranking.
+
+See docs/source-research.md for the command and boundaries. Provider prices used by
+the initial run are saved as dated configuration; no further tariff research is
+required by the user. Astra requests select Standard processing and explicit caching
+without breakpoints, so automatic cache writes are outside this first execution.
+The manual research-result workflow only downloads an already encrypted HTML report;
+it does not run analysis or expose source files or credentials.

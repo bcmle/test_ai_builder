@@ -112,8 +112,14 @@ class PostgresLedger:
             used = {r['run_id']:r['used'] for r in await cur.fetchall()}
             count = await (await conn.execute('SELECT count(*) AS n FROM app.usage WHERE run_id=%s AND provider=%s AND endpoint=%s',
                                               (run_id,provider,endpoint))).fetchone()
+            request_count = count['n']
+            if (provider, endpoint) == ('tavily', 'extract'):
+                fetched = await (await conn.execute(
+                    'SELECT count(*) AS n FROM app.source_fetch_attempts WHERE run_id=%s',
+                    (run_id,))).fetchone()
+                request_count += fetched['n']
             blocked = (sum(used.values())+amount > study['limit_micro'] or used.get(run_id,0)+amount > run['limit_micro']
-                       or count['n'] >= run['config_json']['limits'][policy[provider,endpoint]]
+                       or request_count >= run['config_json']['limits'][policy[provider,endpoint]]
                        or await self.active_ms(conn, run) >= run['config_json']['limits']['active_seconds']*1000)
             if blocked:
                 await conn.execute("UPDATE app.runs SET status='paused',control_version=control_version+1 WHERE id=%s", (run_id,))
@@ -185,6 +191,8 @@ class PostgresLedger:
             if not run:
                 raise KeyError(run_id)
             rows = await (await conn.execute('SELECT * FROM app.usage WHERE run_id=%s ORDER BY created_at,request_id',(run_id,))).fetchall()
+            fetches = await (await conn.execute(
+                'SELECT count(*) AS n FROM app.source_fetch_attempts WHERE run_id=%s', (run_id,))).fetchone()
         totals = dict(calculated_micro=0,reserved_micro=0,unknown_micro=0,billed_micro=0,billed_unknown_count=0)
         for row in rows:
             if row['state']=='settled':
@@ -196,7 +204,10 @@ class PostgresLedger:
             elif row['state']!='released':
                 totals['billed_unknown_count'] += 1
         used = sum(totals[k] for k in ['calculated_micro','reserved_micro','unknown_micro'])
-        return dict(run_id=run_id,limit_micro=run['limit_micro'],remaining_micro=run['limit_micro']-used,requests=rows,**totals)
+        return dict(run_id=run_id,limit_micro=run['limit_micro'],remaining_micro=run['limit_micro']-used,
+                    requests=rows, controlled_document_attempts=fetches['n'],
+                    document_fetches_used=fetches['n']+sum(r['provider']=='tavily' and r['endpoint']=='extract' for r in rows),
+                    **totals)
 
     async def begin_operation(self, key, input_hash):
         async with self.locked(self.run_id, fenced=True) as (conn,_,run):

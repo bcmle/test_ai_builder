@@ -1,0 +1,16 @@
+{
+  "schema_version": "1",
+  "seed": {
+    "scope_id": "first-live-scheduling-us",
+    "base_model_id": "appointment-scheduling-software",
+    "variant_id": "us-small-consulting-teams",
+    "neutral_model_description": "Subscription appointment-scheduling software for small private consulting and professional-service teams in the United States. The proposed product coordinates calendars, booking links and reminders online; it does not deliver the customer's underlying service, lend, insure, trade or hold customer funds. Any payments would be handled directly by an external payment operator. Calendly is a company to investigate as a comparable, not a statement that this business passes any criterion. The team's jurisdiction is not yet confirmed; record any resulting evidence gap explicitly."
+  },
+  "queries": [
+    {"query": "Calendly pricing Standard Teams monthly annual subscription", "max_results": 1, "domains": ["calendly.com"]},
+    {"query": "Calendly 2021 investment valuation 3 billion OpenView Iconiq", "max_results": 1, "domains": []},
+    {"query": "Calendly terms of use customer payment responsibility services", "max_results": 1, "domains": ["calendly.com"]},
+    {"query": "Calendly scheduling consultants small business integrations limitations", "max_results": 2, "domains": ["calendly.com"]}
+  ],
+  "max_new_reads": 6
+}

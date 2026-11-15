@@ -7,17 +7,24 @@ Evidence-based business model research, built from the approved [specification v
 Implemented: strict analytical contracts, versioned filters and interval scoring,
 PostgreSQL budget reservations and usage ledger, fenced LangGraph checkpoints,
 isolated Critic/Verifier inputs, metered provider adapters, immutable evidence files,
-and a single-model graph that produces a private draft report from prepared documents.
+and a single-model graph that produces a private draft report. A bounded research CLI
+now connects Tavily Search, controlled HTML/PDF acquisition and that graph; inputs,
+source snapshots and provider receipts persist in PostgreSQL/private storage.
 
 The private technical deployment includes PostgreSQL, explicit migrations, web readiness,
 and a synthetic smoke run through the real graph. `/preview` labels the result as synthetic.
 GitHub Actions tests the Linux image; a separate manual release delivers its immutable
 GHCR digest to Aeza. Ordinary pushes do not deploy. See [deployment instructions](docs/deployment.md).
 
-**The research product is still incomplete.** Automated discovery/fetch, the persistent worker,
+**The research product is still incomplete.** Market-wide discovery/cataloguing, the persistent worker,
 complete evidence/manual-review validation, owner authentication and the full English
 interface remain in development. No fixture result counts as a live market assessment.
 [Implementation progress](docs/implementation.md) records verification and limitations.
+
+For the explicit one-model research command, frozen plans, replay and acquisition
+limits, see [controlled source research](docs/source-research.md). Production document
+parsing requires Linux resource limits; local parser fixtures on macOS are not a
+substitute for the Linux CI checks. The technical deployment still has no provider keys.
 
 ## Local development
 
