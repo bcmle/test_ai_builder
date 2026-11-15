@@ -140,3 +140,18 @@ legacy API path still remain. R18/R19/full A56–A62 are not all declared comple
 Validation: 81 tests including real PostgreSQL concurrency, state restoration and a
 15-call mocked HTTP path through the actual model adapter/ledger; no external API calls.
 Fixture tariff totals in these tests are synthetic and are not actual provider bills.
+
+## Milestone 4 — private technical deployment preparation
+
+Web now uses PostgreSQL exclusively. Startup runs no migrations. Readiness checks
+application migration checksums, pinned checkpointer schema versions and storage.
+The opt-in `/preview` serves only the fixed synthetic smoke report verified by its
+manifest/hash; it does not expose arbitrary files or draft business results.
+`python -m ai_builder.smoke` runs the actual graph/adapter/ledger using synthetic
+HTTP responses and no provider credentials. Re-running reads the completed graph
+without new physical fixture requests. It writes private evidence artifacts too.
+
+Compose isolates the network and binds web to server loopback only. Separate
+migration/runtime DB roles, explicit bootstrap, CI image smoke/restore checks,
+and manual digest-based deployment are described in docs/deployment.md. This
+profile has no persistent live worker and does not permit live API traffic.

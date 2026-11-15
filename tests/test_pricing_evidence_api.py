@@ -47,10 +47,10 @@ def test_excerpt_presence_is_required_but_not_semantic_validation():
     assert not evidence_support("", "anything")
 
 
-def test_health_needs_no_provider_keys(tmp_path, monkeypatch):
+def test_liveness_needs_no_provider_keys(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     config_path = Path(__file__).parents[1] / "config" / "baseline.json"
-    with TestClient(create_app(tmp_path, config_path)) as client:
+    with TestClient(create_app(tmp_path, config_path, database_url="")) as client:
         assert client.get("/api/v1/health/live").status_code == 200
-        assert client.get("/api/v1/health/ready").json()["status"] == "ready"
+        assert client.get("/api/v1/health/ready").status_code == 503

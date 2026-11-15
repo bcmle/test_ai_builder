@@ -1,65 +1,73 @@
 # AI Builder
 
-Evidence-based business model research, built from the approved [specification](specs/README.md).
+Evidence-based business model research, built from the approved [specification v1.2](specs/README.md).
 
 ## Implementation status
 
-Baseline v1.0 is approved. The first implementation milestone provides:
+Implemented: strict analytical contracts, versioned filters and interval scoring,
+PostgreSQL budget reservations and usage ledger, fenced LangGraph checkpoints,
+isolated Critic/Verifier inputs, metered provider adapters, immutable evidence files,
+and a single-model graph that produces a private draft report from prepared documents.
 
-- strict analytical contracts and versioned configuration;
-- mandatory-filter state aggregation and conservative interval scoring;
-- goal-feasibility groups so an impossible 90-day plan cannot win on unrelated factors;
-- whitelist handoff with dependency/snapshot validation and risk reconciliation;
-- SQLite WAL storage, atomic run/study budget reservations, usage corrections and fencing tokens;
-- immutable content-addressed artifacts and integrity-checked manifests;
-- FastAPI liveness/readiness endpoints which do not call paid services;
-- metered OpenAI Responses and Tavily Search/Extract adapters with bounded transport retries.
+The private technical deployment includes PostgreSQL, explicit migrations, web readiness,
+and a synthetic smoke run through the real graph. `/preview` labels the result as synthetic.
+GitHub Actions tests the Linux image; a separate manual release delivers its immutable
+GHCR digest to Aeza. Ordinary pushes do not deploy. See [deployment instructions](docs/deployment.md).
 
-**This is not yet the complete research application.** Live integration verification, the orchestration worker,
-catalogue, publication/review flows, owner authentication, English product UI, usage dashboard and
-deployment pipeline are subsequent implementation milestones. No real research has been performed.
-See [implementation progress](docs/implementation.md) for acceptance coverage and limitations.
+**The research product is still incomplete.** Automated discovery/fetch, the persistent worker,
+complete evidence/manual-review validation, owner authentication and the full English
+interface remain in development. No fixture result counts as a live market assessment.
+[Implementation progress](docs/implementation.md) records verification and limitations.
 
 ## Local development
 
-Python 3.13 is the tested interpreter. Create an isolated environment from the repository root:
+Python 3.13 and PostgreSQL 17 are the tested versions:
 
 ```sh
 python3.13 -m venv .venv
 .venv/bin/pip install -r requirements.lock
 .venv/bin/pip install --no-deps --no-build-isolation -e .
 .venv/bin/python -m pytest -q
+```
+
+Set `TEST_DATABASE_URL` to a dedicated disposable PostgreSQL database to include the
+integration tests. They rebuild their test schemas. Tests use synthetic data and no provider keys.
+
+For web, configure `DATABASE_URL` with a runtime PostgreSQL role and run migrations
+explicitly with a separate migrator role; web startup performs no DDL. See the technical
+Compose profile for provisioning. Then run:
+
+```sh
 .venv/bin/uvicorn ai_builder.api:app --host 127.0.0.1 --port 8000
 ```
 
-Health endpoints: `/api/v1/health/live` and `/api/v1/health/ready`.
-The database is created under `data/`; override with `AI_BUILDER_DATA`.
-Configuration is read from `config/baseline.json`, or `AI_BUILDER_CONFIG`.
-All mandatory filters and scoring rubrics are versioned in configuration, not in model prompts.
-Run creation snapshots the configuration and its hash. Current rubrics are written in Russian as
-the original specification; generated product text must be English.
+`/api/v1/health/live` checks the process. `/api/v1/health/ready` checks PostgreSQL,
+migration checksums/versions and writable artifact storage. Without a configured database
+readiness returns 503. `AI_BUILDER_DATA` selects private file storage, and
+`AI_BUILDER_CONFIG` selects the versioned configuration (default `config/baseline.json`).
+`AI_BUILDER_TECHNICAL_PREVIEW=1` enables the single validated synthetic preview only.
 
-`requirements.lock` pins the tested runtime and test dependency set. No provider key is needed for tests.
-Test data is synthetic and does not count as live business evidence or an LLM quality evaluation.
+`requirements.lock` pins runtime and test dependencies. Legacy SQLite modules remain for
+existing core tests and migration work; deployed web, accounting and checkpoints use PostgreSQL.
 
 ## Budgets and data
 
-API consumption is limited to **$25/run**, with a separate explicit study cap. Every physical request
-must reserve its maximum expected cost before transmission. Unknown billing continues consuming its
-reservation until reconciled. Repeated transport attempts receive new IDs; replaying the same reservation
-does **not** authorize another external request. Free provider credits do not erase usage cost.
+API consumption is limited to **$25/run**, with a separate explicit study cap. Every physical
+request must reserve its maximum expected cost before transmission. Unknown billing continues
+consuming its reservation until reconciled. Repeated transport attempts receive new IDs;
+replaying a reservation does **not** authorize another external request.
 
-Costs are persisted as integer microdollars after conservative Decimal conversion. Calculated cost,
-cash billed, reserved cost and unknown cost remain distinct. Tariff versions and corrections are retained.
-Cached/reasoning tokens are subcategories of input/output, not additional billable token totals.
+Costs persist as integer microdollars. Calculated cost, cash billed, reserved cost and unknown
+cost remain distinct, with tariff versions and corrections. Cached/reasoning tokens are
+subcategories, not additional billable totals. Technical smoke reports synthetic tariff
+accounting and zero external API calls; these are not actual charges.
 
 ## Delivery
 
-Source repository: [bcmle/test_ai_builder](https://github.com/bcmle/test_ai_builder).
-The target is Aeza Ubuntu 24.04, with OpenAI Astra and Tavily called as external APIs.
-The Dockerfile currently packages the foundation API; the production Compose/Caddy/worker and
-GitHub Actions release workflow will be added with the corresponding implementation stages.
-Docker execution has not yet been verified on this development machine.
+Source: [bcmle/test_ai_builder](https://github.com/bcmle/test_ai_builder).
+Aeza runs Ubuntu 24.04 on x86_64. OpenAI Astra and Tavily will be called as external APIs.
+The technical web binds only to server `127.0.0.1:8080`, viewed through an SSH tunnel.
+Domain/HTTPS, owner access control and scheduled external backups precede public release.
 
-Credentials, runtime databases, private evidence and the local `full_tt.md` discussion are excluded
-from Git and the Docker build context. No API keys are embedded in source or build arguments.
+Credentials, runtime databases, private evidence and local `full_tt.md` are excluded from
+Git and the Docker context. Provider keys are not passed to technical smoke or CI.

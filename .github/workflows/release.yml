@@ -1,0 +1,100 @@
+name: Release to Aeza
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Full 40-character commit SHA already merged into main
+        required: true
+        type: string
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: aeza-technical-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: aeza-technical
+    services:
+      postgres:
+        image: postgres:17.12-bookworm@sha256:40865bc877a289da75963d97d72b59633f639fc5af7a4e856bfa3714cae5b536
+        env:
+          POSTGRES_PASSWORD: fixture-release-only
+          POSTGRES_DB: ai_builder_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd 'pg_isready -U postgres -d ai_builder_test'
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Validate and select release commit
+        env:
+          RELEASE_COMMIT: ${{ inputs.commit }}
+        run: |
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$RELEASE_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          git cat-file -e "$RELEASE_COMMIT^{commit}"
+          git merge-base --is-ancestor "$RELEASE_COMMIT" origin/main
+          git checkout --detach "$RELEASE_COMMIT"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+      - name: Test selected revision
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:fixture-release-only@localhost:5432/ai_builder_test
+          TEST_DEPLOY_ADMIN_DSN: postgresql://postgres:fixture-release-only@localhost:5432/ai_builder_test
+        run: |
+          pip install -r requirements.lock
+          pip install --no-deps --no-build-isolation .
+          pip check
+          python -m compileall -q src
+          for script in deploy/*.sh; do bash -n "$script"; done
+          python -m pytest -q
+      - name: Build and test the exact release image
+        env:
+          RELEASE_COMMIT: ${{ inputs.commit }}
+        run: |
+          docker build --platform linux/amd64 --label org.opencontainers.image.revision="$RELEASE_COMMIT" --label io.ai-builder.deploy-bundle-sha256="$(bash deploy/bundle-hash.sh)" -t "ghcr.io/bcmle/test_ai_builder:$RELEASE_COMMIT" .
+          sudo --preserve-env=PATH,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT bash deploy/ci-smoke.sh "ghcr.io/bcmle/test_ai_builder:$RELEASE_COMMIT"
+      - name: Publish tested image
+        id: publish
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_COMMIT: ${{ inputs.commit }}
+        run: |
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker push "ghcr.io/bcmle/test_ai_builder:$RELEASE_COMMIT"
+          IMAGE=$(docker image inspect --format '{{index .RepoDigests 0}}' "ghcr.io/bcmle/test_ai_builder:$RELEASE_COMMIT")
+          [[ "$IMAGE" =~ ^ghcr.io/bcmle/test_ai_builder@sha256:[a-f0-9]{64}$ ]]
+          echo "digest=${IMAGE##*@sha256:}" >> "$GITHUB_OUTPUT"
+          docker logout ghcr.io
+      - name: Verify public image availability for Aeza
+        env:
+          IMAGE_DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          if ! docker manifest inspect "ghcr.io/bcmle/test_ai_builder@sha256:$IMAGE_DIGEST" >/dev/null; then
+            echo '::error::The tested image was published, but anonymous pull is unavailable. Set the package visibility to public for this public-source technical image, then rerun the release. No server changes have been made.'
+            exit 1
+          fi
+      - name: Deliver immutable image
+        env:
+          IMAGE_DIGEST: ${{ steps.publish.outputs.digest }}
+          RELEASE_COMMIT: ${{ inputs.commit }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          DEPLOY_KEY: ${{ secrets.AEZA_DEPLOY_KEY }}
+          KNOWN_HOSTS: ${{ secrets.AEZA_KNOWN_HOSTS }}
+        run: |
+          test -n "$DEPLOY_HOST" && test -n "$DEPLOY_KEY" && test -n "$KNOWN_HOSTS"
+          [[ "$DEPLOY_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$DEPLOY_PORT" =~ ^[0-9]+$ ]]
+          umask 077
+          install -d -m 700 "$RUNNER_TEMP/aeza-ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/aeza-ssh/key"
+          printf '%s\n' "$KNOWN_HOSTS" > "$RUNNER_TEMP/aeza-ssh/known_hosts"
+          trap 'rm -f "$RUNNER_TEMP/aeza-ssh/key"' EXIT
+          ssh -i "$RUNNER_TEMP/aeza-ssh/key" -p "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/aeza-ssh/known_hosts" -o ConnectTimeout=15 "ai-deploy@$DEPLOY_HOST" "sudo /usr/local/sbin/test-ai-builder-deploy $IMAGE_DIGEST $RELEASE_COMMIT"
+          printf 'Deployed `%s` as `sha256:%s` to the private technical environment.\n' "$RELEASE_COMMIT" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
