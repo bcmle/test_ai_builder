@@ -1,0 +1,91 @@
+name: test-ai-builder
+x-app: &app
+  image: ${AI_BUILDER_IMAGE:?Set immutable application image digest}
+  user: "10001:10001"
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  networks: [internal]
+  volumes:
+    - /var/lib/test-ai-builder/data:/app/data
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE:?Set pinned PostgreSQL 17 image}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ai_builder
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Required}
+      MIGRATOR_PASSWORD: ${MIGRATOR_PASSWORD:?Required}
+      RUNTIME_PASSWORD: ${RUNTIME_PASSWORD:?Required}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [internal]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d ai_builder"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  web:
+    <<: *app
+    restart: unless-stopped
+    # A normal bridge is required for host port publication; backend jobs stay isolated.
+    networks: [internal, preview]
+    environment:
+      DATABASE_URL: postgresql://ai_runtime:${RUNTIME_PASSWORD}@postgres:5432/ai_builder
+      AI_BUILDER_DATA: /app/data
+      AI_BUILDER_CONFIG: /app/config/baseline.json
+      AI_BUILDER_TECHNICAL_PREVIEW: "1"
+    ports:
+      - "127.0.0.1:8080:8000"
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  migrate:
+    <<: *app
+    profiles: [tools]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://ai_migrator:${MIGRATOR_PASSWORD}@postgres:5432/ai_builder
+    command: [python, -m, ai_builder.pg_migrate]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  smoke:
+    <<: *app
+    profiles: [tools]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://ai_runtime:${RUNTIME_PASSWORD}@postgres:5432/ai_builder
+      AI_BUILDER_DATA: /app/data
+      AI_BUILDER_CONFIG: /app/config/baseline.json
+      AI_BUILDER_TECHNICAL_PREVIEW: "1"
+    command: [python, -m, ai_builder.smoke]
+    depends_on:
+      postgres: {condition: service_healthy}
+
+networks:
+  internal:
+    internal: true
+  preview:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
+volumes:
+  postgres-data:
+    name: test_ai_builder_pgdata

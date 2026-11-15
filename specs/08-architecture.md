@@ -1,25 +1,25 @@
 # 08. Архитектура, конфигурация и API
 
-Статус: APPROVED BASELINE v1.0 (пользователь, 15.11.2026). Предложение: один сервер, модульное приложение, отдельный worker. Не утверждённый стек.
+Статус: APPROVED BASELINE v1.2 (пользователь, 15.11.2026).
 
 ## Компоненты
 
 - Python + FastAPI: API, авторизация владельца, выдача страниц.
 - Jinja templates + небольшой JavaScript: UI и периодическое обновление статуса; отдельный frontend framework не обязателен.
-- SQLite в WAL на локальном persistent volume: сущности, очередь StageExecution, события и ревизии; один worker, до двух параллельных внешних задач. База не лежит на сетевом диске.
+- PostgreSQL на локальном persistent volume: сущности, RunCommand/RunLease, журнал StageExecution, события и ревизии; один worker, до двух параллельных внешних задач. База не лежит на сетевом диске.
 - Файловое хранилище на томе: private snapshots и полные очищенные payload, public exports отдельно.
-- Worker выполняет ограниченный DAG. Очередь долговечна в БД, не только в памяти HTTP-процесса.
-- Адаптер LLM: structured generation + tool loop + usage/error normalization. Предварительный кандидат Claude; точный model ID фиксируется после проверки доступа и eval, один на роль в пределах run.
-- Адаптер поиска: предварительно Tavily; адаптер чтения — HTTP/text extraction. Провайдеры не встроены в бизнес-правила.
+- LangGraph StateGraph выполняет фиксированный граф и условные ветвления. Worker читает долговечные команды запуска/возобновления run и вызывает граф; отдельного планировщика очереди стадий нет. Checkpoints сохраняются PostgreSQL checkpointer в отдельной схеме той же БД, не InMemorySaver.
+- Адаптер LLM: structured generation + tool loop + usage/error normalization. Выбран OpenAI gpt-6-astra; версия/параметры фиксируются для run, качество проверяется eval.
+- Адаптер поиска: Tavily Search; адаптер чтения — HTTP/text extraction. Провайдеры не встроены в бизнес-правила.
 - Reverse proxy с TLS, web и worker в Docker Compose; без Redis/Celery/vector DB для текущего объёма.
 
-Версии библиотек выбираются и фиксируются lockfile при реализации. Документ не обещает совместимость конкретных текущих версий, не проверенных интеграционно. Если SQLite упирается в измеренные ограничения, переход на PostgreSQL — отдельное изменение спеки.
+Версии библиотек выбираются и фиксируются lockfile при реализации. Документ не обещает совместимость конкретных текущих версий, не проверенных интеграционно. Целевое хранилище v1.2 — PostgreSQL; SQLite текущего кода является промежуточной реализацией.
 
 ## Поток и транзакции
 
-Web валидирует config и создаёт Run + pending stages в одной транзакции, возвращает 202. Worker захватывает lease_token/lease_expires_at короткой транзакцией, освобождает DB-lock на время сети. Запись результата и следующей стадии атомарна и принимает только актуальный lease_token; устаревший ответ сохраняется в аудите без изменения результата. Уникальность stage по run/assessment_scope/stage/input_hash/analytical_config_hash/prompt_version предотвращает дублирование. Бюджет резервируется транзакционно по run+study до каждого физического запроса согласно 10-operations. Exactly-once billing не обещаем: при таймауте резерв unknown остаётся занятым.
+Web валидирует config, создаёт Run + RunCommand(start) в одной транзакции и возвращает 202. Worker захватывает RunLease короткой транзакцией и запускает LangGraph; переходы и возобновление принадлежат только LangGraph. StageExecution сохраняет аудит и квитанции узлов, но больше не ставит зависимые стадии в очередь. Бюджет по run+study резервируется до каждого физического API-вызова. Запись domain result/StageExecution receipt/audit выполняется одной транзакцией приложения при актуальной RunLease; checkpoint фиксируется отдельно после этого. Общая атомарность business commit и checkpoint commit не предполагается. Повтор узла с тем же invocation_key возвращает сохранённый результат без повторного API-запроса; незавершённый внешний вызов оставляет unknown reservation. Exactly-once billing не обещается.
 
-Resume переиспользует succeeded stages при совпадении ключа. Аналитические изменения инвалидируют зависимые результаты и создают AnalysisRevision/new run по 03/04. Политика исполнения (время/бюджет) версионируется отдельно и не меняет аналитические входы. active_elapsed_ms/active_interval_started_at не сбрасываются при resume. Публикация указывает на sealed manifest AnalysisRevision; partial публикация сохраняет неполные статусы. Смена указателя атомарна.
+Resume загружает checkpoint совместимой версии графа и переиспользует квитанции succeeded-узлов при совпадении invocation_key. Аналитические изменения инвалидируют зависимые результаты и создают AnalysisRevision/new run по 03/04. Политика исполнения (время/бюджет) версионируется отдельно и не меняет аналитические входы. active_elapsed_ms/active_interval_started_at не сбрасываются при resume. Публикация указывает на sealed manifest AnalysisRevision; partial публикация сохраняет неполные статусы. Смена указателя атомарна.
 
 ## API-контракты
 
@@ -37,7 +37,7 @@ Resume переиспользует succeeded stages при совпадении
 | POST /runs | config_version, mode, source_run_id nullable; Idempotency-Key | 202 run_id; тот же ключ+тело возвращает прежний run, другое тело с тем же ключом — 409 |
 | POST /runs/{id}/resume | expected_control_version | 202; незавершённые стадии, без сброса лимитов; повтор не создаёт копии |
 | POST /runs/{id}/pause | expected_control_version | Не запускать новые стадии, текущий вызов завершить/таймаутить и сохранить |
-| POST /reviews | target, expected_revision_id, decision, reason, evidence_ids | Новая ManualReview/AnalysisRevision, инвалидирование и очередь по 04; 409 при конфликте |
+| POST /reviews | target, expected_revision_id, decision, reason, evidence_ids | Новая ManualReview/AnalysisRevision, инвалидирование и команда продолжения графа по 04; 409 при конфликте |
 | POST /runs/{id}/publish | revision_id, expected_control_version | Проверка public projection/manifest и атомарная публикация sealed revision |
 | GET /health/live | — | Процесс отвечает |
 | GET /health/ready | — | БД/том доступны, конфиг валиден; не делает платных запросов |
@@ -52,11 +52,11 @@ schema_version; launch_context; discovery(target=12, directions, excluded_market
 
 ## Дополнение v0.2: стек для выбранного объёма и Aeza
 
-Предложенный стек сохраняется: Python/FastAPI + Jinja/HTML/CSS + небольшой JavaScript, отдельный Python worker, SQLite WAL, Docker Compose. Reverse proxy — Caddy с TLS. Это позволяет сделать полноценные карточки, фильтры, сравнение, раскрытие доказательств и интерфейс владельца без отдельной SPA. Внешний вид Kelpie не требует определённого frontend-фреймворка. CSS-компоненты/токены описаны в 09-interface; код пока не создаём.
+Предложенный стек сохраняется: Python/FastAPI + Jinja/HTML/CSS + небольшой JavaScript, LangGraph в отдельном Python worker, PostgreSQL, Docker Compose. Reverse proxy — Caddy с TLS. Это позволяет сделать полноценные карточки, фильтры, сравнение, раскрытие доказательств и интерфейс владельца без отдельной SPA. Внешний вид Kelpie не требует определённого frontend-фреймворка. CSS-компоненты/токены описаны в 09-interface; реализация начата после утверждения baseline.
 
-Развёртывание предполагает VPS на Aeza с доступом к Docker и постоянному диску, а не только размещение статических файлов. Конкретный тариф/ОС/регион пользователь ещё не указал. Базовый путь контейнеризации описан в [официальной документации FastAPI](https://fastapi.tiangolo.com/deployment/docker/). Не предполагаем наличие готового тарифа Aeza или доступность API из любой страны.
+Развёртывание предполагает VPS на Aeza с доступом к Docker и постоянному диску, а не только размещение статических файлов. Выбран Aeza SWEs-2, Стокгольм, Ubuntu 24.04, 2 vCPU/4 GB RAM/60 GB NVMe. Базовый путь контейнеризации описан в [официальной документации FastAPI](https://fastapi.tiangolo.com/deployment/docker/). Не предполагаем наличие готового тарифа Aeza или доступность API из любой страны.
 
-SQLite остаётся для первого прототипа с одним worker и ограниченным числом одновременных задач; международный охват сам по себе не требует распределённой архитектуры. При росте числа одновременных запусков или измеренном конфликте записей — отдельная спецификация перехода на PostgreSQL. Нельзя обещать текущему варианту неограниченный мировой объём.
+PostgreSQL используется с одним worker и максимум двумя параллельными assessment scopes; международный охват не требует распределённого исполнения. Масштабирование — по измеренной необходимости.
 
 Дополнительные API для исследования рынков: GET /studies (опубликованные обзоры гостю), GET /studies/{id}/coverage (покрытие без приватных payload), POST /studies (owner: scope/config), POST /studies/{id}/close (owner: expected_revision, reason; требует ready_to_close), POST /studies/{id}/defer (owner: candidate IDs, reason). Открытие следующего рынка — новое owner-создание study после закрытия текущего; все исключения отражаются в истории. POST /runs получает study_id; его market/scenario сверяются со study. Обновления исследования версионируются и публикуются по правилам снимков, как run. Лимит денежных расходов задаётся также на study, чтобы много маленьких run не обходили общий предел.
 
@@ -75,3 +75,29 @@ POST /studies/{id}/scope (expected_revision_id, scope, reason) создаёт н
 ## Usage API v1.0
 
 Owner-only GET /owner/usage и GET /owner/usage/export?format=csv|json с фильтрами date_from/date_to/study_id/run_id/agent/provider/model/purpose. Агрегация поверх UsageRecord/PricingVersion по 10-operations, без повторного прибавления settled reservations. Чтение расходов не вызывает платные API. Встроенные операции discovery/selection создают run до первого внешнего вызова, чтобы расходы подготовки входили в $25/run.
+
+## Единственный механизм оркестрации, baseline v1.1
+
+Используем библиотеку LangGraph локально внутри worker Aeza. LangSmith Cloud/Agent Server, отдельный управляемый сервис и OpenAI Agents SDK не требуются. Версии langgraph, langgraph-checkpoint-postgres и psycopg фиксируются lockfile после интеграционных проверок. Данные приложения и checkpoints находятся в отдельных схемах одной PostgreSQL DB. Сеть/LLM не выполняются под DB-lock. Checkpoint durability синхронная; business commit и checkpoint commit остаются отдельными транзакциями, даже в одной БД.
+
+Владение исполнением run проверяется перед вызовом графа, каждым внешним запросом, фиксацией результата и записью checkpoint. Адаптер checkpointer должен отклонять запись устаревшего RunLease token; одна лишь проверка в начале узла недостаточна. Worker продлевает аренду, потеря аренды прекращает новые действия. Параллельные дочерние узлы действуют под текущей арендой run.
+
+Fencing выполняется в PostgreSQL: захват/продление RunLease и защищённая запись блокируют одну строку RunLease через SELECT FOR UPDATE. Checkpointer-адаптер в той же транзакции и на том же connection проверяет token/expiry и сохраняет checkpoint, pending writes и связанные blobs; проверка отдельным запросом до вызова saver недостаточна. При потере аренды запись отклоняется. Совместимость транзакционного подключения штатного saver должна быть доказана A56 до интеграции; если его API этого не позволяет, требуется пересмотр интеграции, а не ослабление fencing. Внешний HTTP-вызов не удерживает DB lock: перед отправкой фиксируется разрешённая попытка; уже разрешённая попытка может завершиться после потери аренды и учитывается как возможный расход. Дубликаты блокируются квитанциями/unknown reservation. Web не пишет checkpoints; один worker остаётся ограничением v1.
+
+Источники истины: checkpoints — позиция исполнения; application DB — бизнес-результаты, usage, immutable revisions и права; RunCommand — доставка управляющего действия. При сбое между domain commit и checkpoint узел повторяется и читает готовую квитанцию. При сбое после отправки платного запроса до записи результата неизвестный расход сохраняется; скрытая повторная отправка из-за replay запрещена. Дальнейший retry — отдельное зарегистрированное действие в рамках политики 10-operations.
+
+Новая GraphExecution получает graph_version/state_schema_version, scope и свои checkpoint IDs. Изменение topology/schema не применяется молча к старым checkpoints: совместимость проверяется до resume; несовместимое исполнение остаётся paused до явной миграции либо нового run с parent_run_id. Старые публикации/usage сохраняются. UI/API продолжают использовать business statuses, revision_id и control_version; внутренние checkpoints не выдаются гостям.
+
+Переход с текущего кода: Store.enqueue/claim/finish и постановка next_stage заменяются LangGraph runner + RunCommand/RunLease + идемпотентными node receipts. Два механизма планирования одновременно не эксплуатируются. Pricing, usage ledger, Pydantic, adapters, evidence и deterministic score переиспользуются; существующие tests стадий адаптируются к новым границам транзакций. Это требование к следующей реализации, не утверждение, что миграция уже выполнена.
+
+## PostgreSQL, миграции и ресурсы v1.2
+
+Приложение использует psycopg и параметризованный SQL; полноценный ORM не требуется. Миграции приложения — версионированные SQL-файлы, таблица schema_migrations с checksum и единый migration runner под advisory lock. Миграции saver выполняются его штатным setup отдельно до старта worker. Порядок и версии входят в release manifest; необратимые изменения требуют backup и плана восстановления. Web/worker не выполняют DDL автоматически при старте. DB port наружу не публикуется; runtime credentials не имеют административных прав, migrator использует отдельные права.
+
+Резервирование бюджета блокирует study, затем run в одинаковом порядке; проверка остатка, вставка reservation и счётчиков — одна транзакция. Уникальные request_id/invocation_key/idempotency_key защищены DB constraints. SQLSTATE serialization/deadlock допускает ограниченный повтор только транзакции, не внешнего API. Деньги — целые microdollars либо точный NUMERIC, без float. Синхронные DB операции не блокируют event loop: использовать async psycopg и ограниченные pools.
+
+Переход с SQLite: сохранить исходную БД, перенести IDs, связи, usage/reservations, ревизии и references на файлы, проверить суммы/количества/hash; checkpoints SQLite не объявляются совместимыми с PostgreSQL. Если рабочих данных ещё нет, допускается чистая инициализация с явно зафиксированным фактом; удаление существующих запусков не является миграцией. Текущий код не считается мигрированным после изменения документа.
+
+Aeza 2 vCPU/4 GB остаётся стартовым вариантом, не гарантией производительности. Compose содержит web, worker, postgres и caddy. До batch измерить peak RAM, CPU, диск, DB connections и длительности на двух параллельных scopes; отсутствие OOM/restart и сохранение работоспособности web обязательны. Сборка образов выполняется CI, а не на VPS. Kubernetes/Redis/Celery/векторная DB/SPA не добавляются.
+
+[Async psycopg](https://www.psycopg.org/psycopg3/docs/advanced/async.html): соединения не разделяются между процессами; каждый процесс создаёт свой pool. Для независимых параллельных транзакций используются разные connections, а не общий connection с несколькими cursors.

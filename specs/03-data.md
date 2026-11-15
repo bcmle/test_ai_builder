@@ -1,6 +1,6 @@
 # 03. Контракты данных и состояния
 
-Статус: APPROVED BASELINE v1.0 (пользователь, 15.11.2026). Каноническое описание будущих схем; исполняемых JSON Schema и базы пока нет. Заменяет накопленные определения v0.1–v0.3.
+Статус: APPROVED BASELINE v1.2 (пользователь, 15.11.2026).
 
 ## Общие правила и области принадлежности
 
@@ -79,7 +79,7 @@ Analysis_status: pending/running/technical_incomplete/needs_review/complete. com
 
 Статистика технических ошибок показывается отдельно даже у fail. Счётчики групп взаимно исключаются; score отсутствует до оценки и не равен нулю. Обоснованные интервалы допускаются в final: value равен нижней границе, диапазон виден; группы достижимости определены в 07-ranking.
 
-StageExecution: study_id, run_id nullable, assessment_scope_id nullable, analysis_revision_id nullable, stage, input_hash/config_hash/prompt_version, state pending/running/succeeded/retry_wait/failed/paused, attempt_count, request_count, lease_token nullable, lease_expires_at nullable, output_ref nullable, error_category nullable. Запись результата принимает только актуальный lease_token. Истёкший lease возвращается в очередь; старый ответ не перезаписывает новый результат. Подробные лимиты запросов/попыток — 10-operations.
+StageExecution — журнал исполнения узла LangGraph и долговечная квитанция результата, не очередь переходов. Поля: study_id, run_id nullable, assessment_scope_id nullable, analysis_revision_id nullable, graph_version, thread_id, checkpoint_ns, node_name, invocation_key, input_hash/config_hash/prompt_version, state pending/running/succeeded/retry_wait/failed/paused, attempt_count, request_count, run_lease_token, output_ref nullable, error_category nullable. invocation_key включает run/scope/node/input/config/prompt/analysis_revision; для повторяемого discovery/tool-loop также cycle_id/iteration_id. Уникальность квитанции предотвращает повторную фиксацию результата при переисполнении узла. Истёкшая аренда не ставит стадии в самостоятельную очередь; восстановление определяется checkpoint и квитанциями по 08/10.
 
 Run.status: selecting/queued/running/completed/partial/paused/failed. selecting включает discovery и фиксацию подборки; расходы уже относятся к run. completed — все выбранные модели получили конечный результат по своему маршруту, включая needs_review; partial — есть техническая неполнота или подборка меньше target; paused — ждёт вмешательства/бюджета; failed — нет пригодного результата при фатальной ошибке. Discovery-цель кандидатов и полнота CEO-подборки — отдельные флаги, не один счётчик.
 
@@ -97,3 +97,15 @@ BudgetReservation: study_id, run_id nullable, execution_id, request_id, amount_u
 ## Usage ledger v1.0
 
 UsageRecord и PricingVersion — канонические сущности учёта по контракту 10-operations. UsageRecord связан с BudgetReservation по reservation_id/request_id; run/study ссылки и nullable-счётчики соблюдают область исполнения. Корректировки usage/тарифа журналируются; записи хранятся вместе с историей запусков и входят в backup. Данные провайдеров санитизируются до сохранения: authorization headers, API-ключи и credentials не входят в usage payload.
+
+## Состояние LangGraph, baseline v1.1
+
+Run получает graph_version, state_schema_version и coordinator_thread_id. GraphExecution: run_id, assessment_scope_id nullable, thread_id (уникальный непрозрачный ID), checkpoint_ns, graph_version, latest_checkpoint_id nullable, status, interrupt_refs[]. Координатор run и каждый assessment scope имеют отдельные thread_id; это идентификаторы исполнения, не общий чат LLM. Checkpoint ID используется для диагностики восстановления и никогда не заменяет AnalysisRevision или published_revision_id.
+
+RunLease: run_id, token, expires_at, owner_id; единственная аренда исполнения run, включая дочерние графы. RunCommand: run_id, kind start/resume/pause, expected_control_version, idempotency_key, payload_ref, state pending/applied/rejected. Команды доставляют действия владельца worker; не определяют порядок аналитических стадий.
+
+Граф хранит типизированное состояние: ссылки на результаты/доказательства, выбранный scope, версии и interrupt IDs. Полные чужие отчёты не попадают в общий messages-массив. GraphInterrupt хранит kind manual_review/budget/technical, scope, target_revision_id, question_ref и state pending/resolved/superseded. Решение владельца связано с ManualReview, evidence IDs и ожидаемой версией; несколько параллельных вопросов разрешаются по собственным IDs. Бизнес-needs_review, техническая пауза и статус графа — отдельные поля.
+
+## Уточнения v1.2
+
+Физическое хранилище — PostgreSQL по 08; контракты IDs/immutable revisions/денег сохраняются. FetchResult расширен provenance и parser metadata по 02. Run хранит снимок role_model_config: model ID, reasoning effort, output limit и prompt version для каждой роли; смена аналитической настройки создаёт новый run, не подменяет старый checkpoint. EvalRun хранит fixture/version, role, repetition, expected/actual, critical, status, usage refs и config hash; его расходы учитываются как purpose=eval с явными лимитами. ReleaseManifest содержит commit SHA, image digest, версии миграций/graph/state, backup ref и результаты проверок.
