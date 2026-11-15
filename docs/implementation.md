@@ -86,3 +86,57 @@ integration before any live workflow is enabled.
 Validation on macOS/Python 3.13 with temporary PostgreSQL 17.12: **63 tests passed**
 (including all 3 PostgreSQL tests), `pip check` passed. The test database used a
 local Unix socket only and was stopped after verification.
+
+## Milestone 3b — PostgreSQL accounting and the single-scope business graph
+
+Implemented against v1.2:
+
+- Async PostgreSQL ledger: study-then-run locking, exact microdollars, request caps,
+  durable reservations, unknown usage, corrections, late settlement and snapshot-consistent summaries.
+- Physical provider attempts use this ledger. Stable operation keys reuse saved
+  responses. An interrupted operation without a response pauses instead of silently
+  resending; node/domain receipts survive the domain-commit/checkpoint gap.
+- Single-scope LangGraph: research → independent criterion applicability → critic →
+  neutral handoff gate (one repair) → verifier → reconciliation → factors → draft card.
+  Fail/unknown bypass critic and scoring. Any critic claim affecting a mandatory
+  criterion conservatively requests reassessment; it is not silently kept as pass.
+- Every role uses fresh explicit input, configurable reasoning/output settings, a
+  version hash and private input audit. Scope/thread/input hashes reject cross-scope
+  checkpoint access and changed input on resume. Verifier sees no critic impact/order.
+- A private English HTML report shows criteria, risk verification, claim quotations,
+  source links, provisional estimates and accounting. It is not a public publication.
+- Explicit CLI `python -m ai_builder.run_scope` accepts a prepared, hash-checked source
+  packet; `DATABASE_URL` and `OPENAI_API_KEY` are environment-only. Migrations remain
+  explicit via `python -m ai_builder.pg_migrate`. The CLI keeps a lease heartbeat,
+  persists active time, applies an overall timeout and prints the run ID for diagnosis.
+
+Example (spends real API budget; not executed during development):
+
+```sh
+python -m ai_builder.run_scope --scope private/scope.json \
+  --pricing private/verified-openai-pricing.json \
+  --settings config/examples/role-settings.json --study-budget 25 \
+  --output outputs/private-draft.html
+```
+
+`role-settings.json` is an initial example, not an evaluated quality recommendation.
+A tariff file must be independently verified; no fabricated production price is shipped.
+A scope packet has scope/base/variant IDs, neutral description and documents with
+snapshot/evidence ID, URL, text, SHA-256 and validated policy status. This is a trusted
+internal input, not a public upload API. This slice does not claim it fetched sources.
+`--resume-run ID` reloads frozen inputs and continues an interrupted active run. Paused
+runs require owner resolution, which is not implemented by this CLI. Unknown reservations
+are not erased. Interrupted clock intervals are charged conservatively until recovery;
+this may pause earlier after downtime rather than reset limits.
+
+Remaining before live/public acceptance: controlled source acquisition/discovery,
+role search/tool loops and independent counter-source retrieval, full semantic claim/card
+validation, durable owner manual-review/resume flow, coordination of the complete batch,
+public projection/auth/UI and deployment. Cards have explicit publication blockers.
+The existing SQLite Store remains only in the legacy health application/tests; the new
+scope CLI does not use its stage scheduler. SQLite import (A57) and retirement of that
+legacy API path still remain. R18/R19/full A56–A62 are not all declared complete.
+
+Validation: 81 tests including real PostgreSQL concurrency, state restoration and a
+15-call mocked HTTP path through the actual model adapter/ledger; no external API calls.
+Fixture tariff totals in these tests are synthetic and are not actual provider bills.

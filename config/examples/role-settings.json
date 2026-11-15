@@ -1,0 +1,9 @@
+{
+  "research": {"reasoning_effort": "low", "max_output_tokens": 4096},
+  "applicability": {"reasoning_effort": "low", "max_output_tokens": 2048},
+  "critic": {"reasoning_effort": "low", "max_output_tokens": 4096},
+  "neutrality": {"reasoning_effort": "low", "max_output_tokens": 1024},
+  "repair": {"reasoning_effort": "low", "max_output_tokens": 4096},
+  "verifier": {"reasoning_effort": "low", "max_output_tokens": 4096},
+  "factors": {"reasoning_effort": "low", "max_output_tokens": 8192}
+}

@@ -7,6 +7,7 @@ They are transport building blocks, not the research orchestration worker.
 import asyncio
 from decimal import Decimal
 import ipaddress
+import inspect
 import json
 import random
 import socket
@@ -18,6 +19,7 @@ from pydantic import BaseModel, ValidationError
 
 from .pricing import Pricing, TokenUsage
 from .store import Store, uid
+from .pg_ledger import digest
 
 
 class ProviderFailure(Exception):
@@ -42,15 +44,36 @@ async def public_url(url: str) -> str:
 
 class MeteredHTTP:
     def __init__(self, store: Store, run_id: str, agent: str, pricing: Pricing, purpose="live",
-                 client: httpx.AsyncClient | None = None, sleep=asyncio.sleep, deadline=None):
+                 client: httpx.AsyncClient | None = None, sleep=asyncio.sleep, deadline=None, operation_key=None):
         self.store, self.run_id, self.agent = store, run_id, agent
         self.pricing, self.purpose = pricing, purpose
-        self.pricing_id = store.register_pricing(pricing.model_dump(mode="json"))
+        self.pricing_id = None
+        self.operation_key = operation_key
         self.client = client
         self.sleep = sleep
         self.deadline = deadline
 
+    async def accounting(self, method, *args, **kwargs):
+        result = getattr(self.store, method)(*args, **kwargs)
+        return await result if inspect.isawaitable(result) else result
+
     async def post(self, endpoint, key, payload, upper, usage_parser):
+        durable = hasattr(self.store, 'begin_operation')
+        if durable:
+            if not self.operation_key:
+                raise ValueError('Durable operation key required for PostgreSQL transport')
+            packet_hash = digest({'endpoint': endpoint, 'payload': payload, 'agent': self.agent,
+                                  'purpose': self.purpose, 'pricing': self.pricing.model_dump(mode='json')})
+            cached = await self.store.begin_operation(self.operation_key, packet_hash)
+            if cached is not None:
+                return cached
+        self.pricing_id = await self.accounting('register_pricing', self.pricing.model_dump(mode='json'))
+        result = await self._post(endpoint, key, payload, upper, usage_parser)
+        if durable:
+            await self.store.finish_operation(self.operation_key, result)
+        return result
+
+    async def _post(self, endpoint, key, payload, upper, usage_parser):
         provider = self.pricing.provider
         base = {"openai": "https://api.openai.com/v1/", "tavily": "https://api.tavily.com/"}[provider]
         if (provider, endpoint) not in {("openai", "responses"), ("tavily", "search"), ("tavily", "extract")}:
@@ -63,9 +86,11 @@ class MeteredHTTP:
             if timeout <= 0:
                 raise ProviderFailure("deadline_exhausted")
             request_id = uid()
-            self.store.reserve(run_id=self.run_id, request_id=request_id, logical_request_id=logical,
+            reserved = await self.accounting('reserve', run_id=self.run_id, request_id=request_id, logical_request_id=logical,
                                provider=provider, model=self.pricing.model, endpoint=endpoint, agent=self.agent,
                                purpose=self.purpose, pricing_id=self.pricing_id, upper=upper)
+            if not reserved:
+                raise ProviderFailure('duplicate_physical_attempt')
             start = time.monotonic()
             client = self.client or httpx.AsyncClient(follow_redirects=False, trust_env=False)
             retry_after = None
@@ -73,18 +98,18 @@ class MeteredHTTP:
                 response = await client.post(base + endpoint, headers={"Authorization": "Bearer " + key},
                                              json=payload, timeout=timeout)
             except (httpx.ConnectError, httpx.ConnectTimeout):
-                self.store.release(request_id, "Connection failed before HTTP request transmission")
+                await self.accounting('release', request_id, "Connection failed before HTTP request transmission")
                 failure = ProviderFailure("connection_failed", True)
             except httpx.TransportError:
-                self.store.mark_unknown(request_id, "transport_error")
+                await self.accounting('mark_unknown', request_id, "transport_error")
                 failure = ProviderFailure("transport_unknown", True)
             except BaseException:
-                self.store.mark_unknown(request_id, "interrupted")
+                await self.accounting('mark_unknown', request_id, "interrupted")
                 raise
             else:
                 if response.status_code >= 300:
                     # Without documented usage/no-billing evidence, preserve the reserve.
-                    self.store.mark_unknown(request_id, f"http_{response.status_code}")
+                    await self.accounting('mark_unknown', request_id, f"http_{response.status_code}")
                     error_code = None
                     try:
                         error = response.json().get("error", {})
@@ -96,7 +121,7 @@ class MeteredHTTP:
                     retry = (response.status_code == 429 and not exhausted) or response.status_code >= 500
                     failure = ProviderFailure("quota_exhausted" if exhausted else f"http_{response.status_code}", retry)
                     if exhausted or response.status_code in (401, 403):
-                        self.store.pause_run(self.run_id, failure.code)
+                        await self.accounting('pause_run', self.run_id, failure.code)
                     try:
                         retry_after = float(response.headers.get("retry-after", ""))
                         if not 0 <= retry_after < float("inf"):
@@ -107,15 +132,15 @@ class MeteredHTTP:
                     try:
                         data = response.json()
                     except ValueError:
-                        self.store.mark_unknown(request_id, "invalid_provider_json")
+                        await self.accounting('mark_unknown', request_id, "invalid_provider_json")
                         raise ProviderFailure("invalid_provider_json") from None
                     try:
                         amount, metrics = usage_parser(data)
                         metrics.update(duration_ms=int((time.monotonic() - start) * 1000), status=data.get("status", "completed"),
                                        provider_request_id=response.headers.get("x-request-id"))
-                        self.store.settle(request_id, amount, metrics)
+                        await self.accounting('settle', request_id, amount, metrics)
                     except (KeyError, TypeError, ValueError, ValidationError):
-                        self.store.mark_unknown(request_id, "usage_unavailable")
+                        await self.accounting('mark_unknown', request_id, "usage_unavailable")
                         raise ProviderFailure("usage_unavailable") from None
                     return data
             finally:
@@ -126,16 +151,19 @@ class MeteredHTTP:
             delay = retry_after if retry_after is not None else min(30, 2 * 2 ** attempt) + random.random()
             # An excessive Retry-After is an explicit pause condition, not an early retry.
             if delay > 60 or (self.deadline and time.monotonic() + delay >= self.deadline):
-                self.store.pause_run(self.run_id, "retry_after_exceeds_deadline")
+                await self.accounting('pause_run', self.run_id, "retry_after_exceeds_deadline")
                 raise ProviderFailure("retry_after_exceeds_deadline")
             await self.sleep(delay)
         raise AssertionError("Unreachable retry state")
 
 
 class OpenAIAdapter:
-    def __init__(self, transport: MeteredHTTP, key: str):
+    def __init__(self, transport: MeteredHTTP, key: str, reasoning_effort="low"):
         if transport.pricing.provider != "openai":
             raise ValueError("OpenAI tariff required")
+        if reasoning_effort not in {'low', 'medium', 'high'}:
+            raise ValueError('Unsupported reasoning effort')
+        self.reasoning_effort = reasoning_effort
         self.transport, self.key = transport, key
 
     async def generate(self, system: str, packet: dict, output_type: type[BaseModel], max_output_tokens=4096):
@@ -158,7 +186,7 @@ class OpenAIAdapter:
         payload = {"model": self.transport.pricing.model, "store": False,
                    "instructions": system,
                    "input": [{"role": "user", "content": json.dumps(packet, ensure_ascii=False)}],
-                   "reasoning": {"effort": "low"}, "max_output_tokens": max_output_tokens,
+                   "reasoning": {"effort": self.reasoning_effort}, "max_output_tokens": max_output_tokens,
                    "text": {"format": {"type": "json_schema", "name": output_type.__name__, "strict": True, "schema": schema}}}
         # UTF-8 byte bound plus a conservative framing allowance; reject long-context tariff crossover.
         input_upper = len(json.dumps(payload, ensure_ascii=False).encode()) + 4096

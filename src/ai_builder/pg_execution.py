@@ -63,9 +63,10 @@ class FencedPostgresSaver(AsyncPostgresSaver):
     Do not use for setup/pruning. Those are explicit maintenance operations after
     workers are stopped. One instance belongs to one run, never shared across runs.
     """
-    def __init__(self, pool: AsyncConnectionPool, run_id: str, token: str):
+    def __init__(self, pool: AsyncConnectionPool, run_id: str, token: str, thread_id: str | None = None):
         super().__init__(pool)
         self.run_id, self.token = run_id, token
+        self.thread_id = thread_id
 
     @asynccontextmanager
     async def _cursor(self, *, pipeline=False):
@@ -85,3 +86,28 @@ class FencedPostgresSaver(AsyncPostgresSaver):
 
     async def aprune(self, *args, **kwargs):
         raise RuntimeError('Checkpoint pruning is not a runtime operation')
+
+    def _check_thread(self, config):
+        if self.thread_id is not None and (config or {}).get('configurable',{}).get('thread_id') != self.thread_id:
+            raise Conflict('Checkpoint thread is outside the bound scope')
+
+    async def aget_tuple(self, config):
+        self._check_thread(config)
+        return await super().aget_tuple(config)
+
+    async def aput(self, config, checkpoint, metadata, new_versions):
+        self._check_thread(config)
+        return await super().aput(config, checkpoint, metadata, new_versions)
+
+    async def aput_writes(self, config, writes, task_id, task_path=''):
+        self._check_thread(config)
+        return await super().aput_writes(config, writes, task_id, task_path)
+
+    async def alist(self, config, **kwargs):
+        self._check_thread(config)
+        async for item in super().alist(config, **kwargs):
+            yield item
+
+    async def aget_delta_channel_writes(self, config, channels):
+        self._check_thread(config)
+        return await super().aget_delta_channel_writes(config, channels)
