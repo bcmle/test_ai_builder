@@ -1,6 +1,6 @@
 # 03. Контракты данных и состояния
 
-Статус: APPROVED BASELINE v1.1 (пользователь, 15.11.2026). Каноническое описание целевых схем; часть контрактов уже реализована, интеграция LangGraph предстоит. Заменяет накопленные определения v0.1–v0.3.
+Статус: APPROVED BASELINE v1.2 (пользователь, 15.11.2026).
 
 ## Общие правила и области принадлежности
 
@@ -105,3 +105,7 @@ Run получает graph_version, state_schema_version и coordinator_thread_i
 RunLease: run_id, token, expires_at, owner_id; единственная аренда исполнения run, включая дочерние графы. RunCommand: run_id, kind start/resume/pause, expected_control_version, idempotency_key, payload_ref, state pending/applied/rejected. Команды доставляют действия владельца worker; не определяют порядок аналитических стадий.
 
 Граф хранит типизированное состояние: ссылки на результаты/доказательства, выбранный scope, версии и interrupt IDs. Полные чужие отчёты не попадают в общий messages-массив. GraphInterrupt хранит kind manual_review/budget/technical, scope, target_revision_id, question_ref и state pending/resolved/superseded. Решение владельца связано с ManualReview, evidence IDs и ожидаемой версией; несколько параллельных вопросов разрешаются по собственным IDs. Бизнес-needs_review, техническая пауза и статус графа — отдельные поля.
+
+## Уточнения v1.2
+
+Физическое хранилище — PostgreSQL по 08; контракты IDs/immutable revisions/денег сохраняются. FetchResult расширен provenance и parser metadata по 02. Run хранит снимок role_model_config: model ID, reasoning effort, output limit и prompt version для каждой роли; смена аналитической настройки создаёт новый run, не подменяет старый checkpoint. EvalRun хранит fixture/version, role, repetition, expected/actual, critical, status, usage refs и config hash; его расходы учитываются как purpose=eval с явными лимитами. ReleaseManifest содержит commit SHA, image digest, версии миграций/graph/state, backup ref и результаты проверок.

@@ -1,6 +1,6 @@
 # 12. Решения, альтернативы и ревью
 
-Статус: APPROVED BASELINE v1.1 (пользователь, 15.11.2026). Архитектурные решения и история их согласования. Ничто здесь не объявляется утверждённым CEO.
+Статус: APPROVED BASELINE v1.2 (пользователь, 15.11.2026).
 
 ## D01. Управляемый конвейер
 
@@ -20,7 +20,7 @@
 
 ## D05. Один сервер и публичное чтение
 
-FastAPI/Jinja + LangGraph в worker + SQLite + Compose на Aeza, один владелец. Альтернатива — отдельная SPA, PostgreSQL, Redis, распределённые агенты. Выбор соответствует малому batch 12 моделей. Недостаток — один сервер, ограниченная параллельность, нет высокой доступности. Миграция рассматривается по измеренной необходимости.
+FastAPI/Jinja + LangGraph в worker + PostgreSQL + Compose на Aeza, один владелец. Альтернатива — отдельная SPA, Redis, распределённые агенты. Выбор соответствует малому batch 12 моделей. Недостаток — один сервер, ограниченная параллельность, нет высокой доступности. Миграция рассматривается по измеренной необходимости.
 
 ## Согласование baseline v1.0
 
@@ -57,4 +57,10 @@ OpenAI gpt-6-astra, Tavily и VPS Aeza выбраны, ключи и запро�
 
 Причина: готовые механизмы сохранения/продолжения и ручного вмешательства полезны для многопроходного анализа. Альтернатива — собственный конечный автомат/очередь; OpenAI Agents SDK не добавляем как второй механизм оркестрации. Компромисс: новые зависимости, версионирование checkpoints и явная обработка границы транзакций domain/checkpoint DB. Framework не гарантирует exactly-once billing, истинность фактов или изоляцию входов.
 
-Официальные опоры: [Persistence](https://docs.langchain.com/oss/python/langgraph/persistence), [Checkpointers](https://docs.langchain.com/oss/python/langgraph/checkpointers), [Interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts). Выбор SQLite и fencing-адаптера — наше проектное решение; конкретные версии и свойства интеграции должны пройти A48–A55. На момент изменения спеков LangGraph ещё не установлен и код не мигрирован.
+Официальные опоры: [Persistence](https://docs.langchain.com/oss/python/langgraph/persistence), [Checkpointers](https://docs.langchain.com/oss/python/langgraph/checkpointers), [Interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts). Исторически в v1.1 был выбран SQLite; v1.2 заменяет его PostgreSQL. Fencing-адаптер — наше проектное решение; конкретные версии и свойства интеграции должны пройти A48–A55. На момент изменения спеков LangGraph ещё не установлен и код не мигрирован.
+
+## D07. Архитектурный аудит v1.2
+
+Пользователь поручил принять направление PostgreSQL, уточнить evidence retrieval, релизы и eval. PostgreSQL выбран для app data и штатного production-checkpointer LangGraph; SQLite мог обслужить малую нагрузку, но поддержка собственного протокола двух файлов не оправдана для целевой системы. PostgreSQL добавляет обслуживание/миграции и не гарантирует автоматически общую транзакцию business result/checkpoint или exactly-once billing. Основание: [LangGraph checkpointers](https://reference.langchain.com/python/langgraph/checkpoints).
+
+Остальной стек сохраняется. Retrieval: контролируемая HTTP-загрузка + HTML/PDF parsers, внешнее извлечение с явно ограниченной доказательной ролью. Delivery: GitHub Actions/GHCR, явный выпуск на Aeza, digest, миграции, backup/rollback; Compose подходит для одного сервера ([Docker](https://docs.docker.com/compose/how-tos/production/)). Качество Astra подтверждается eval, а не фактом HTTP 200. Эта детализация утверждена пользователем для реализации; переход на PostgreSQL, CI и parsers ещё не выполнен.

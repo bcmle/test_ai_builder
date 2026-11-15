@@ -1,6 +1,6 @@
 # 11. Приёмка, eval и этапы реализации
 
-Статус: APPROVED BASELINE v1.1 (пользователь, 15.11.2026). Это план проверок; ни одна из них ещё не выполнялась на продукте.
+Статус: APPROVED BASELINE v1.2 (пользователь, 15.11.2026).
 
 ## Проверяемые сценарии
 
@@ -100,5 +100,17 @@ README: локальный запуск, переменные окружения
 - A51: несколько manual interrupts, повторный/устаревший ответ, restart worker и повторный Command: каждый вопрос разрешается один раз, версии проверяются, сохранённые платные шаги и ManualReview не дублируются. Бюджетная пауза не снимается чужим manual resume.
 - A52: фактические payload Critic/Verifier и tool calls не содержат чужой chat history, score/confidence/impact или полного GraphState; приватный checkpoint/trace недоступен гостю. Нейтральность текста проверяется отдельно.
 - A53: transport retry максимум 3 физические попытки; node retry не умножает их. Resume/time travel не откатывает usage, активное время и лимиты. Snapshot/receipt версии не смешиваются.
-- A54: backup/restore включает обе SQLite DB и evidence; восстановленный граф продолжает работу с правильным checkpoint и расходами. Несовместимая graph/schema version блокирует resume до явного решения.
+- A54: backup/restore включает схемы приложения и LangGraph в PostgreSQL и evidence; восстановленный граф продолжает работу с правильным checkpoint и расходами. Несовместимая graph/schema version блокирует resume до явного решения.
 - A55: старая StageExecution-очередь не планирует этапы параллельно LangGraph; единственный источник переходов — граф. RunCommand управляет только запуском/паузой/продолжением.
+
+## Приёмка изменений v1.2
+
+- A56: интеграция на реальном PostgreSQL: параллельное резервирование не превышает run/study cap; уникальные квитанции; старый token не пишет checkpoint/pending writes/blobs. Конкурирующая смена владельца между проверкой и записью не обходит fencing; rollback/commit saver проверены, HTTP не выполняется под DB lock.
+- A57: чистая установка и миграция сохранённого SQLite fixture сохраняют IDs, связи, суммы usage/reservations и evidence hashes; повтор миграции безопасен, конфликт checksum останавливает запуск. Production DB не удаляется автоматически.
+- A58: HTML/PDF fixtures, redirect/private IP, DNS rebinding, oversized/decompression payload, timeout и robots запрет: политика соблюдается; неподдерживаемый документ не даёт pass. External Extract не получает ложных гарантий загрузки и не проходит обязательный фильтр самостоятельно.
+- A59: CI запускает PostgreSQL tests и собирает Linux image; явный deploy доставляет тот же digest, сохраняет release manifest. Обычный push не вызывает deploy; secrets не попадают в artifacts/logs. Проверен rollback совместимого release и отдельный restore backup для несовместимого.
+- A60: восстановление из внешней зашифрованной копии возвращает документы, usage и checkpoint; ключ восстановления доступен владельцу. Stale heartbeat/backup видны; отсутствие OOM/restart проверено при двух scopes на целевом VPS.
+- A61: role settings зафиксированы, eval по прежним 12 кейсам × 3 повторения не снижает пороги; стоимость/latency показаны по ролям. Ошибки API делают eval неполным, не успешным. Фактическая доступность Astra и совместимость параметров проверяются отдельно от качества.
+- A62: до полного batch выполнен один live assessment scope от поиска до карточки с evidence, Critic/Verifier и ledger. Искусственный сбой на fixture/контролируемом этапе доказывает resume без повтора сохранённого платного шага. Если live модель отсеяна, путь до карточки отказа подтверждён, но путь до рейтинга остаётся непоказанным; успешный fixture не подменяет live результат.
+
+Порядок следующей реализации: PostgreSQL/migrations + LangGraph recovery → evidence fetch/parser → один полный scope → минимальный owner/public просмотр результата → полный batch/интерфейс → deployment acceptance. $25 — потолок каждого run, не общий бюджет разработки. Перед платным eval задать совокупный owner лимит eval/study; его нельзя вывести умножением количества тестов на $25. Прогноз стоимости 12 моделей строится по измерениям малого прогона, явно с неопределённостью; при недостатке бюджета результат partial/paused, а не обещание полного batch.
