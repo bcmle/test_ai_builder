@@ -40,7 +40,8 @@ class FixtureRoles:
             result={'criteria':[dict(criterion_id=f'F{i:02}',state='completed',result=self.criterion_status,
                 evidence_ids=['evidence'],reason='Synthetic fixture') for i in range(1,11)]}
         elif role=='applicability':
-            result=dict(status='supports_'+self.criterion_status if self.criterion_status!='unknown' else 'insufficient',reason='Synthetic fixture')
+            assert 'research' not in packet and 'criteria' not in packet
+            result=dict(items=[dict(criterion_id=c['id'],status='supports_'+self.criterion_status if self.criterion_status!='unknown' else 'insufficient',reason='Synthetic fixture') for c in packet['criteria_rules']])
         elif role in {'critic','repair'}:
             result=dict(risks=[dict(risk_id='risk',impact=3,critic_order=0,premise_claim_ids=['claim'],essential_premise_ids=['claim'])],
                         claims=[claim()],limitations=['Fixture, not market research'])
@@ -50,7 +51,7 @@ class FixtureRoles:
             assert set(packet)=={'assessment_scope_id','base_model_id','variant_id','neutral_model_description','launch_context','claims','documents'}
             assert 'impact' not in str(packet) and 'critic_order' not in str(packet)
             assert 'affected_criterion_ids' not in str(packet)
-            result=dict(items=[dict(claim_id='made-up' if self.bad_verifier else 'claim',status='supported',evidence_ids=['evidence'],reason='Fixture')])
+            result=dict(items=[dict(claim_id='made-up' if self.bad_verifier else c['claim_id'],status='supported',evidence_ids=['evidence'],reason='Fixture') for c in packet['claims']])
         elif role=='factors':
             result=dict(factors=[dict(factor_id=f'S{i:02}',value=dict(low=2,high=3),claim_ids=['estimate']) for i in range(1,6)],
                 claims=[claim('estimate','judgment'),claim('days','judgment',dict(low=30,high=60)),claim('cost','judgment',dict(low=100,high=500))],
@@ -78,8 +79,9 @@ def test_routes_and_payload_isolation(config,status,neutral,expected,tmp_path):
             assert ('verifier' in names)==(expected=='pass')
             if expected=='pass':
                 assert Decimal(state['card']['score']['value'])==50
-                assert state['card']['publication']=='draft'
-                assert state['card']['publication_blockers']
+                assert state['card']['publication']=='ready'
+                assert state['card']['publication_blockers']==[]
+                assert len(state['factor_verification']['items'])==3
                 # Re-running from the same starting input reuses role receipts.
                 count=len(roles.calls)
                 await execute_scope(ledger,config,packet(),roles)
@@ -136,14 +138,14 @@ def test_crash_after_role_receipt_before_checkpoint_does_not_repeat_role(config)
 def test_business_graph_uses_postgres_metered_model_transport(config):
     import json
     import httpx
-    from ai_builder.pipeline import ModelRoles, PROMPTS, PREFIX, Research, Applicability, Critique, Neutrality, Verification, Factors
+    from ai_builder.pipeline import ModelRoles, PROMPTS, PREFIX, Research, ApplicabilityBatch, Critique, Neutrality, Verification, Factors
     from test_providers import pricing, model_result
     async def check():
         await migrate(DSN)
         async with execution_pool(DSN) as pool:
             ledger,_,_=await setup(pool,config)
             fixture=FixtureRoles()
-            schemas={'research':Research,'applicability':Applicability,'critic':Critique,'repair':Critique,
+            schemas={'research':Research,'applicability':ApplicabilityBatch,'critic':Critique,'repair':Critique,
                      'neutrality':Neutrality,'verifier':Verification,'factors':Factors}
             async def handler(request):
                 body=json.loads(request.content)
@@ -157,8 +159,8 @@ def test_business_graph_uses_postgres_metered_model_transport(config):
                 result=await execute_scope(ledger,config,packet(),roles)
                 assert result['card']['eligibility']=='pass'
                 before=await ledger.summary(ledger.run_id)
-                assert len(before['requests'])==15
-                assert before['calculated_micro']==30000
+                assert len(before['requests'])==7
+                assert before['calculated_micro']==14000
                 assert before['reserved_micro']==before['unknown_micro']==0
                 await execute_scope(ledger,config,packet(),roles)
                 after=await ledger.summary(ledger.run_id)
@@ -174,4 +176,25 @@ def test_scope_checkpointer_rejects_another_thread(config):
             graph,cfg=await build_scope_graph(ledger,config,packet(),FixtureRoles())
             with pytest.raises(Conflict,match='outside'):
                 await graph.checkpointer.aget_tuple({'configurable':{'thread_id':'another-scope'}})
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize('verdict', ['refuted', 'mixed', 'insufficient'])
+def test_unresolved_factor_premise_prevents_final_publication(config, verdict):
+    class UnresolvedRoles(FixtureRoles):
+        async def generate(self, role, packet, schema, key):
+            result = await super().generate(role, packet, schema, key)
+            if role == 'verifier' and any(c['claim_id'] == 'estimate' for c in packet['claims']):
+                result.items[0].status = verdict
+            return result
+
+    async def check():
+        await migrate(DSN)
+        async with execution_pool(DSN) as pool:
+            ledger, _, _ = await setup(pool, config)
+            state = await execute_scope(ledger, config, packet(), UnresolvedRoles())
+            assert state['eligibility'] == 'pass'
+            assert state['card']['publication'] == 'draft'
+            assert state['card']['score']['status'] == 'unavailable'
+            assert 'factor_claim_unresolved:estimate' in state['card']['publication_blockers']
     asyncio.run(check())

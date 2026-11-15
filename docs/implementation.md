@@ -232,3 +232,29 @@ decrypted on the owner's Mac and verified against the server SHA-256:
 This demonstrates real search, document acquisition, analytical criteria and a
 visible saved result. It does not establish full evidence acceptance, a live
 Critic/Verifier assessment, catalogue completion or public-site readiness.
+
+## Milestone 6 — v1.3 prototype implementation (2026-11-16)
+
+Specifications were committed before code: 19812ff, then b3dec07 for the batched
+independent applicability check. The new collection runner discovers and freezes
+20 source-backed base-model hypotheses, uses one shared $100 study ledger, processes
+models sequentially and writes sanitized snapshots after each result. PostgreSQL
+migration 006 stores collection context, membership and child identities.
+
+The graph independently checks criterion applicability in one batch, then Critic,
+neutral handoff and Verifier. Factor/test-plan premises receive a separate isolated
+verification before final publication. Unknown/failed mandatory criteria still
+block rating. Confidence/method fields are explicit and remain absent for older
+records that did not supply them; exporting a legacy run does not rescore it.
+
+The English read-only UI has a collection overview with outcome counts, detailed
+cards, source/claim disclosures, comparison of up to three and methodology.
+Local visual checks used the real saved Calendly report: desktop/mobile layout,
+criterion expansion and source links work, without horizontal mobile overflow.
+Empty analytical sections are hidden when the corresponding stages never ran.
+
+Local Python/PostgreSQL verification: **244 passed, 2 skipped** (Linux-only parser
+isolation/runtime privileges are checked in CI). No paid APIs were called in tests.
+The new Caddy profile exposes only public GET/HEAD pages on port80. Deployment and
+the new live collection are pending at this point; results will be appended after
+they actually complete. No fixture result counts as a live collection.

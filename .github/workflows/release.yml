@@ -105,7 +105,7 @@ jobs:
           install -d -m 700 "$RUNNER_TEMP/aeza-backup"
           ssh -i "$RUNNER_TEMP/aeza-ssh/key" -p "$DEPLOY_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$RUNNER_TEMP/aeza-ssh/known_hosts" -o ConnectTimeout=15 "ai-deploy@$DEPLOY_HOST" "cat /var/lib/test-ai-builder/export/$RELEASE_COMMIT.tar.age" > "$RUNNER_TEMP/aeza-backup/$RELEASE_COMMIT.tar.age"
           test -s "$RUNNER_TEMP/aeza-backup/$RELEASE_COMMIT.tar.age"
-          printf 'Deployed `%s` as `sha256:%s` to the private technical environment.\n' "$RELEASE_COMMIT" "$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Deployed `%s` as `sha256:%s`. Read-only prototype: http://%s/\n' "$RELEASE_COMMIT" "$IMAGE_DIGEST" "$DEPLOY_HOST" >> "$GITHUB_STEP_SUMMARY"
       - name: Store encrypted off-server backup
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

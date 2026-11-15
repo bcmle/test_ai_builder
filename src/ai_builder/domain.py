@@ -33,6 +33,8 @@ class Criterion(Contract):
     result: Literal["pass", "fail", "unknown"] | None
     evidence_ids: list[str]
     reason: str = Field(min_length=1)
+    confidence: Literal['low', 'medium', 'high'] | None = None
+    confidence_reason: str | None = None
 
     @model_validator(mode="after")
     def coherent(self):
@@ -125,6 +127,10 @@ class Claim(Contract):
     input_claim_ids: list[str]
     quantity_estimate: Interval | None
     affected_criterion_ids: list[str]
+    method: Literal['primary_source', 'secondary_source', 'calculation', 'model_judgment', 'human_required'] | None = None
+    confidence: Literal['low', 'medium', 'high'] | None = None
+    confidence_reason: str | None = None
+    assumptions: list[str] = Field(default_factory=list)
 
 
 class Risk(Contract):
@@ -193,7 +199,7 @@ def handoff(claims: list[Claim], risks: list[Risk], allowed_snapshots: set[str],
     for identifier in sorted(selected):
         visit(identifier)
     # No impact order, criterion flags, or original risk opinion crosses the boundary.
-    return [HandoffClaim.model_validate(by_id[i].model_dump(exclude={"affected_criterion_ids"}))
+    return [HandoffClaim.model_validate(by_id[i].model_dump(include=set(HandoffClaim.model_fields)))
             for i in sorted(visited)]
 
 

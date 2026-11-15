@@ -69,3 +69,10 @@ compose exec -T postgres psql -X -qAt -U postgres -d ai_builder_ci_restore < "$S
 cmp "$WORK/fingerprint.txt" "$WORK/restored-fingerprint.txt"
 # Only publish non-secret artifacts from WORK; ci.env and raw dumps are private.
 echo 'Technical Compose smoke, restart, runtime privileges and restore checks passed.'
+compose up -d --wait web caddy
+curl --fail --silent --show-error http://127.0.0.1/ > "$WORK/public-home.html"
+for path in preview health/ready api/v1/health/ready; do
+  [[ $(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1/$path") == 404 ]]
+done
+[[ $(curl --silent --request POST --output /dev/null --write-out '%{http_code}' http://127.0.0.1/) == 404 ]]
+echo 'Public read-only HTTP routes passed.'

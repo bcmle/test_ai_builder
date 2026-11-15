@@ -68,11 +68,11 @@ def test_technical_smoke_restart_preserves_graph_and_ledger(tmp_path,monkeypatch
         first=await run_smoke(DSN,data,config_path)
         second=await run_smoke(DSN,data,config_path)
         assert first['run_id']==second['run_id']
-        assert first['fixture_http_calls_this_invocation']==15
+        assert first['fixture_http_calls_this_invocation']==7
         assert second['fixture_http_calls_this_invocation']==0
         assert second['external_api_calls']==0
-        assert first['physical_attempts']==second['physical_attempts']==15
-        assert first['synthetic_calculated_micro']==second['synthetic_calculated_micro']==30000
+        assert first['physical_attempts']==second['physical_attempts']==7
+        assert first['synthetic_calculated_micro']==second['synthetic_calculated_micro']==14000
         assert first['report_sha256']==second['report_sha256']
         assert first['evidence_manifest']==second['evidence_manifest']
         ArtifactStore(data/'evidence').verify_manifest(second['evidence_manifest'])

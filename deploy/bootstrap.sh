@@ -21,6 +21,7 @@ install -d -m 755 /opt/test-ai-builder /opt/test-ai-builder/deploy
 install -d -m 700 /etc/test-ai-builder /var/lib/test-ai-builder /var/backups/test-ai-builder
 install -d -o 10001 -g 10001 -m 700 /var/lib/test-ai-builder/data
 install -o root -g root -m 644 "$SOURCE/compose.yaml" /opt/test-ai-builder/compose.yaml
+install -o root -g root -m 644 "$SOURCE/deploy/Caddyfile" /opt/test-ai-builder/deploy/Caddyfile
 for file in common.sh deploy.sh backup.sh verify-restore.sh export-backup.sh bootstrap.sh bundle-hash.sh; do
   install -o root -g root -m 755 "$SOURCE/deploy/$file" "/opt/test-ai-builder/deploy/$file"
 done

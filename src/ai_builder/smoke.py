@@ -21,13 +21,13 @@ from .evidence import ArtifactStore
 from .pg_execution import acquire_lease, execution_pool
 from .pg_ledger import PostgresLedger, digest
 from .pipeline import (ScopePacket, Document, ModelRoles, PROMPTS, PREFIX,
-                       Research, Applicability, Critique, Neutrality, Verification,
+                       Research, ApplicabilityBatch, Critique, Neutrality, Verification,
                        Factors, build_scope_graph)
 from .pricing import Pricing
 from .report import render_report
 
 SMOKE_LOCK = 418724212
-FIXTURE_VERSION = 'technical-smoke-v1'
+FIXTURE_VERSION = 'technical-smoke-v2'
 
 
 def fixture_scope():
@@ -49,7 +49,7 @@ def fixture_claim(identifier='synthetic-claim',kind='fact',quantity=None):
 
 
 class FixtureHTTP:
-    schemas = {'research':Research,'applicability':Applicability,'critic':Critique,'repair':Critique,
+    schemas = {'research':Research,'applicability':ApplicabilityBatch,'critic':Critique,'repair':Critique,
                'neutrality':Neutrality,'verifier':Verification,'factors':Factors}
 
     def __init__(self):
@@ -65,7 +65,7 @@ class FixtureHTTP:
             result={'criteria':[dict(criterion_id=f'F{i:02}',state='completed',result='pass',
                 evidence_ids=['synthetic-evidence'],reason='Synthetic fixture assertion, not real-world evidence') for i in range(1,11)]}
         elif role=='applicability':
-            result=dict(status='supports_pass',reason='Synthetic applicability fixture')
+            result=dict(items=[dict(criterion_id=c['id'],status='supports_pass',reason='Synthetic applicability fixture') for c in packet['criteria_rules']])
         elif role in {'critic','repair'}:
             result=dict(risks=[dict(risk_id='synthetic-risk',impact=3,critic_order=0,
                 premise_claim_ids=['synthetic-claim'],essential_premise_ids=['synthetic-claim'])],
@@ -76,8 +76,8 @@ class FixtureHTTP:
             if set(packet)!={'assessment_scope_id','base_model_id','variant_id','neutral_model_description',
                              'launch_context','claims','documents'}:
                 raise RuntimeError('Verifier input boundary failed')
-            result=dict(items=[dict(claim_id='synthetic-claim',status='supported',evidence_ids=['synthetic-evidence'],
-                                   reason='Only supported within the synthetic fixture')])
+            result=dict(items=[dict(claim_id=c['claim_id'],status='supported',evidence_ids=['synthetic-evidence'],
+                                   reason='Only supported within the synthetic fixture') for c in packet['claims']])
         elif role=='factors':
             result=dict(factors=[dict(factor_id=f'S{i:02}',value=dict(low=2,high=3),claim_ids=['synthetic-estimate']) for i in range(1,6)],
                 claims=[fixture_claim('synthetic-estimate','judgment'),fixture_claim('synthetic-days','judgment',dict(low=30,high=60)),
@@ -163,7 +163,7 @@ async def run_smoke(dsn, data_dir, config_path):
                                 state=await graph.ainvoke(None if snapshot.values else {},thread_config,durability='sync')
                             await ledger.stop_clock('completed')
                     usage=await ledger.summary(run_id)
-                    if state['card']['eligibility']!='pass' or len(usage['requests'])!=15 or usage['calculated_micro']!=30000:
+                    if state['card']['eligibility']!='pass' or state['card']['publication']!='ready' or len(usage['requests'])!=7 or usage['calculated_micro']!=14000:
                         raise RuntimeError('Synthetic expected graph/ledger result mismatch')
                     if usage['reserved_micro'] or usage['unknown_micro']:
                         raise RuntimeError('Synthetic ledger contains unfinished requests')

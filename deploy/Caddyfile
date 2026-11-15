@@ -1,0 +1,17 @@
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	@public {
+		method GET HEAD
+		path / /runs/* /models/* /compare /methodology /assets/*
+	}
+	handle @public {
+		reverse_proxy web:8000
+	}
+	handle {
+		respond "Not found" 404
+	}
+}

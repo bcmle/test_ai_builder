@@ -1,6 +1,11 @@
 # AI Builder
 
-Evidence-based business model research, built from the approved [specification v1.2](specs/README.md).
+Evidence-based business model research, built from the approved [specification v1.3](specs/README.md).
+
+The prototype presents a fixed collection of **20 business models** for a US launch:
+outcomes and reasons, comparable cards, evidence passports, comparison of up to three,
+and an ascending ranking of validated assessments. Twenty is the input size, not a
+guarantee of twenty passing recommendations. The interface is in English.
 
 ## Implementation status
 
@@ -16,9 +21,13 @@ and a synthetic smoke run through the real graph. `/preview` labels the result a
 GitHub Actions tests the Linux image; a separate manual release delivers its immutable
 GHCR digest to Aeza. Ordinary pushes do not deploy. See [deployment instructions](docs/deployment.md).
 
-**The research product is still incomplete.** Market-wide discovery/cataloguing, the persistent worker,
-complete evidence/manual-review validation, owner authentication and the full English
-interface remain in development. No fixture result counts as a live market assessment.
+The public site reads a separate, validated snapshot. A manual sequential collection
+runner discovers candidates through Tavily, freezes membership before filtering and
+persists each result. The English website includes overview, details, comparison and
+methodology. Final scores require independent checks of their factual premises.
+
+**This is a prototype.** Market-wide cataloguing, a permanent worker, manual-review
+editor and owner dashboard are deferred. No fixture result counts as a live assessment.
 [Implementation progress](docs/implementation.md) records verification and limitations.
 
 For the explicit one-model research command, frozen plans, replay and acquisition
@@ -59,7 +68,8 @@ existing core tests and migration work; deployed web, accounting and checkpoints
 
 ## Budgets and data
 
-API consumption is limited to **$25/run**, with a separate explicit study cap. Every physical
+The 20-model prototype has **one $100 collection cap**, including discovery and every
+child analysis. The older single-model command defaults to $25/run. Every physical
 request must reserve its maximum expected cost before transmission. Unknown billing continues
 consuming its reservation until reconciled. Repeated transport attempts receive new IDs;
 replaying a reservation does **not** authorize another external request.
@@ -72,9 +82,39 @@ accounting and zero external API calls; these are not actual charges.
 ## Delivery
 
 Source: [bcmle/test_ai_builder](https://github.com/bcmle/test_ai_builder).
-Aeza runs Ubuntu 24.04 on x86_64. OpenAI Astra and Tavily will be called as external APIs.
-The technical web binds only to server `127.0.0.1:8080`, viewed through an SSH tunnel.
-Domain/HTTPS, owner access control and scheduled external backups precede public release.
+Aeza runs Ubuntu 24.04 on x86_64. OpenAI Astra and Tavily are external APIs; research
+runs on Aeza, not the owner's Mac. The prototype exposes read-only HTTP on the server
+IP through Caddy. Private health/synthetic preview remain on `127.0.0.1:8080`.
+Domain/HTTPS and owner access control are deferred; no paid action is available online.
 
 Credentials, runtime databases, private evidence and local `full_tt.md` are excluded from
 Git and the Docker context. Provider keys are not passed to technical smoke or CI.
+
+The earlier SSH-tunnel viewing check was deferred. The read-only prototype has its
+own public-IP acceptance in specs/11-acceptance.md; it does not claim completion of
+the extended full-product acceptance matrix. See [five decisions](DECISIONS.md) and
+[honest limitations](LIMITATIONS.md).
+
+## Run a collection on Aeza
+
+Run inside the deployed application container with the existing server-only provider
+environment and runtime `DATABASE_URL`. No keys belong in commands, Git or Actions.
+
+```sh
+python -m ai_builder.collection \
+  --config /app/config/examples/prototype-config.json \
+  --pricing /app/config/examples/openai-pricing-2026-11-15.json \
+  --tavily-pricing /app/config/examples/tavily-pricing-2026-11-15.json \
+  --settings /app/config/examples/role-settings.json \
+  --study-budget 100 --purpose live
+```
+
+The command prints the collection ID. Resume the saved collection with
+`python -m ai_builder.collection --resume-collection COLLECTION_ID`; completed
+results are reused. It never silently increases the shared budget or changes the
+analytical scenario. Ambiguous in-flight requests require operator review.
+
+The latest saved public result appears at `/`; specific collections at `/runs/{id}`.
+Cards and comparison stay within that collection and scenario. A failed mandatory
+criterion or unresolved evidence does not produce a final score. Public pages cannot
+start a run. Deployment remains an explicit full-SHA GitHub Actions release.

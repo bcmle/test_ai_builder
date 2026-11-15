@@ -1,4 +1,22 @@
-# Technical deployment on Aeza
+# Prototype deployment on Aeza
+
+## Current v1.3 read-only release
+
+Caddy 2.10.2 exposes port 80 for GET/HEAD on `/`, `/runs/*`, `/models/*`,
+`/compare`, `/methodology` and `/assets/*`. Other paths and methods return 404.
+The proxy has no provider credentials or application-data mount. Web reads only
+the separate public JSON projection; private evidence is never a static directory.
+The approved temporary prototype uses HTTP by IP; domain/HTTPS and owner controls
+are deferred. Local web health/preview remain at 127.0.0.1:8080.
+
+Before this release, reinstall the reviewed root-owned deployment bundle using
+the bootstrap command below and the existing age recipient. This adds Caddyfile
+and updates the bundle hash without rotating credentials or changing SSH access.
+Then release the selected full main SHA through the existing GitHub Actions workflow.
+Research is a separate explicit one-off container command; see the README. Stop
+an active research container before starting a release, so backup has no writers.
+
+## Internal technical services
 
 This profile runs PostgreSQL, the web process and an explicit synthetic smoke job.
 It is not the production research worker. No provider API keys are mounted or passed.
@@ -120,8 +138,8 @@ ssh -N -L 8080:127.0.0.1:8080 OWNER@AEZA_HOST
 
 Open `http://127.0.0.1:8080/preview`. `/api/v1/health/live` checks the process;
 `/api/v1/health/ready` checks PostgreSQL/migration versions and artifact storage.
-No server port 8080 or PostgreSQL port is opened publicly. HTTPS/Caddy and owner
-application authentication precede any later public release.
+No server port 8080 or PostgreSQL port is opened publicly. Caddy exposes only the
+read-only prototype routes on port 80; it blocks technical health and preview URLs.
 
 ## Backup, restore and rollback
 

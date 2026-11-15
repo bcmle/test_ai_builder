@@ -10,6 +10,7 @@ import sys
 root = Path(sys.argv[1])
 paths = (
     'compose.yaml',
+    'deploy/Caddyfile',
     'deploy/backup.sh',
     'deploy/bootstrap.sh',
     'deploy/bundle-hash.sh',

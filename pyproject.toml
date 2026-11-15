@@ -21,4 +21,4 @@ testpaths = ["tests"]
 
 
 [tool.setuptools.package-data]
-ai_builder = ["migrations/*.sql", "templates/*.html"]
+ai_builder = ["migrations/*.sql", "templates/*.html", "templates/public/*.html", "static/*"]

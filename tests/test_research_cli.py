@@ -134,13 +134,13 @@ def test_research_end_to_end_http_search_pinned_fetch_parsers_pg_graph_and_repla
                     openai_key='fixture-openai', tavily_key='fixture-tavily', provider_client=client,
                     fetch_document=fetcher.fetch, parser=fixture_parser, output=output)
             assert result.state['card']['eligibility'] == 'pass'
-            assert result.state['card']['publication'] == 'draft'
+            assert result.state['card']['publication'] == 'ready'
             assert len(result.prepared.scope.documents) == 2
             assert len(network.connections) == 4
-            assert len(fixture.calls) == 16
+            assert len(fixture.calls) == 8
             assert 'critic' in [r[0] for r in fixture.roles.calls]
             assert 'verifier' in [r[0] for r in fixture.roles.calls]
-            assert result.usage['calculated_micro'] == 38_000
+            assert result.usage['calculated_micro'] == 22_000
             assert result.usage['reserved_micro'] == result.usage['unknown_micro'] == 0
             assert result.usage['controlled_document_attempts'] == 2
             assert all(request['purpose'] == 'eval' for request in result.usage['requests'])
