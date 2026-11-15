@@ -271,5 +271,37 @@ unresolved route issue. The manually dispatched `public-result.yml` fetches only
 public HTML/JSON from a GitHub runner to verify external access and retrieve the
 saved result; it cannot launch research or read credentials/private files.
 
-The live 20-model collection has started; final results will be appended after it
-actually completes. No fixture result counts as a live collection.
+### First 20-model collection
+
+Collection `1d76fe99e56240989cd67794b7143dce` completed its first processing pass
+on Aeza with 20 frozen, distinct base-model hypotheses and no backfilled replacements.
+Twelve assessments produced `needs_review` cards; eight stopped at technical
+validation. All twenty attempts are visible, with the eight unfinished assessments
+counted separately. The collection remains `partial`, not business-ready.
+
+No model reached final eligibility: F01 (lawful activity) and F03 (own licensing)
+remain unresolved for all twelve completed assessments; other evidence gaps vary.
+Critic, Verifier and final scoring therefore did not run for this live collection.
+Their full path and isolation passed synthetic tests only. No synthetic score is
+substituted into the live result.
+
+For the interrupted Customer Support Helpdesk assessment, the saved research
+response contains a reference outside its frozen document set. It is not an
+alternative snapshot ID of the same source. The validator correctly rejects it;
+the original response and paid receipt remain preserved. No fuzzy source matching,
+automatic pass or paid restart was used to hide this failure.
+
+The PostgreSQL ledger records approximately **$6.68 of $100** after the first pass:
+92 Tavily requests and 23 OpenAI requests, all settled, with no reserved/unknown
+usage. Detailed tokens and credits remain in PostgreSQL. These are stored-tariff
+calculations, not reconciled invoice charges. Six assessments stopped at semantic
+validation and two at structured-output validation.
+
+The [external HTTP check](https://github.com/bcmle/test_ai_builder/actions/runs/43765904555)
+downloaded the actual public HTML and JSON successfully. A Mac browser still gets
+`ERR_CONNECTION_TIMED_OUT`; this is distinct from the verified external HTTP
+response. A local read-only UI mirror uses the downloaded public snapshot to allow
+visual review without rerunning research on the Mac. Three-column comparison and
+source disclosures were checked using real saved data. Desktop/mobile checks and
+all 246 Linux tests passed; this is a prototype delivery with explicit research
+limitations, not acceptance of twenty investment recommendations.

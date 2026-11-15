@@ -20,3 +20,9 @@
   four unresolved criteria. It did not reach Critic/Verifier or final ranking.
   Current collection progress and validation are recorded in
   [implementation notes](docs/implementation.md), not inferred from fixtures.
+- The first 20-model collection produced twelve `needs_review` assessments and
+  eight technical validation stops. No live model passed the mandatory gate, so
+  there is no final ranking or live Critic/Verifier result in this collection.
+  The saved Helpdesk response includes an unregistered evidence reference;
+  automatic semantic repair of such responses is not implemented. Failed models
+  remain visible and are not silently replaced or rerun.
