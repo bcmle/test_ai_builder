@@ -1,9 +1,10 @@
 {
 	admin off
-	auto_https off
+	http_port 8080
+	https_port 8443
 }
 
-:8080 {
+(public_read_only) {
 	@public {
 		method GET HEAD
 		path / /runs/* /models/* /compare /methodology /assets/*
@@ -14,4 +15,15 @@
 	handle {
 		respond "Not found" 404
 	}
+}
+
+# Keep the existing IP-only preview and container healthcheck available.
+# Caddy inserts the domain's automatic HTTPS redirect before this catch-all.
+http://:8080 {
+	import public_read_only
+}
+
+# CI supplies an explicit HTTP address, so it never requests public certificates.
+{$AI_BUILDER_SITE_ADDRESS:https://ai-builder-lab.com} {
+	import public_read_only
 }

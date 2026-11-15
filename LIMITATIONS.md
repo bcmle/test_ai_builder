@@ -11,7 +11,8 @@
   every agent. Source agreement is not proof of underlying truth.
 - Scores, costs of a business test, timelines and qualitative confidence are
   analytical estimates. They are not calibrated success probabilities.
-- The site is a read-only HTTP prototype. Research is started manually on Aeza;
+- The site is a read-only prototype, with domain HTTPS added in v1.3.1.
+  Research is started manually on Aeza;
   no owner login, browser launch button, permanent worker, manual-review editor,
   global catalogue or detailed billing dashboard is included.
 - Provider usage is calculated from stored tariffs. It is distinct from confirmed

@@ -25,13 +25,15 @@ services:
     # the bounding set even when Caddy listens on an unprivileged internal port.
     cap_add: [NET_BIND_SERVICE]
     security_opt: ["no-new-privileges:true"]
-    tmpfs:
-      - /data:uid=10001,gid=10001,mode=0700
-      - /config:uid=10001,gid=10001,mode=0700
+    environment:
+      AI_BUILDER_SITE_ADDRESS: ${AI_BUILDER_SITE_ADDRESS:-https://ai-builder-lab.com}
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /var/lib/test-ai-builder/caddy/data:/data
+      - /var/lib/test-ai-builder/caddy/config:/config
     ports:
       - "0.0.0.0:80:8080"
+      - "0.0.0.0:443:8443"
     networks: [preview]
     depends_on:
       web: {condition: service_healthy}

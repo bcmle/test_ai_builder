@@ -76,6 +76,30 @@ compose up -d --wait web caddy
 curl --fail --silent --show-error http://127.0.0.1:8080/preview >/dev/null
 curl --fail --silent --show-error http://127.0.0.1/ >/dev/null
 [[ $(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1/preview) == 404 ]]
+# DNS must already point to this host for automatic certificate issuance.
+# Resolve locally for these checks while keeping normal certificate/hostname validation.
+PUBLIC_DOMAIN=ai-builder-lab.com
+curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+  --retry 12 --retry-delay 5 --retry-max-time 120 --retry-all-errors \
+  --resolve "$PUBLIC_DOMAIN:443:127.0.0.1" "https://$PUBLIC_DOMAIN/" >/dev/null
+[[ $(curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{http_code} %{redirect_url}' \
+  --resolve "$PUBLIC_DOMAIN:80:127.0.0.1" "http://$PUBLIC_DOMAIN/") == "308 https://$PUBLIC_DOMAIN/" ]]
+for path in preview health/ready api/v1/health/ready; do
+  [[ $(curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{http_code}' \
+    --resolve "$PUBLIC_DOMAIN:443:127.0.0.1" "https://$PUBLIC_DOMAIN/$path") == 404 ]]
+done
+[[ $(curl --silent --show-error --max-time 10 --request POST --output /dev/null --write-out '%{http_code}' \
+  --resolve "$PUBLIC_DOMAIN:443:127.0.0.1" "https://$PUBLIC_DOMAIN/") == 404 ]]
+certificate_fingerprint() {
+  timeout 10 openssl s_client -connect 127.0.0.1:443 -servername "$PUBLIC_DOMAIN" </dev/null 2>/dev/null \
+    | openssl x509 -noout -fingerprint -sha256
+}
+CERTIFICATE_BEFORE=$(certificate_fingerprint)
+compose up -d --no-deps --force-recreate --wait caddy
+curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+  --resolve "$PUBLIC_DOMAIN:443:127.0.0.1" "https://$PUBLIC_DOMAIN/" >/dev/null
+[[ "$CERTIFICATE_BEFORE" == "$(certificate_fingerprint)" ]] || { echo 'Caddy certificate changed during persistence check.' >&2; exit 1; }
+echo 'Domain HTTPS, redirect, private-route isolation and certificate persistence passed.'
 printf '%s\n' "$AI_BUILDER_IMAGE" > "$STATE/current-image.next"
 mv "$STATE/current-image.next" "$STATE/current-image"
 MIGRATIONS=$(compose exec -T postgres psql -X -qAt -U postgres -d ai_builder -c "SELECT coalesce(json_agg(row_to_json(m))::text,'[]') FROM (SELECT name,checksum FROM app.schema_migrations ORDER BY name) m")

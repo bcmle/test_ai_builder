@@ -30,13 +30,13 @@ jobs:
           mkdir -p public-result
           home_status=$(curl --fail --silent --show-error --connect-timeout 10 --max-time 20 \
             --output public-result/home.html --write-out '%{http_code}' \
-            'http://77.232.142.154/')
+            'https://ai-builder-lab.com/')
           [[ "$home_status" == 200 ]] || { echo "Public homepage returned HTTP $home_status" >&2; exit 1; }
-          echo 'Public homepage is reachable over HTTP.'
+          echo 'Public homepage is reachable over validated HTTPS.'
           if [[ -n "$COLLECTION_ID" ]]; then
             collection_status=$(curl --fail --silent --show-error --connect-timeout 10 --max-time 20 \
               --output public-result/collection.json --write-out '%{http_code}' \
-              "http://77.232.142.154/runs/$COLLECTION_ID?format=json")
+              "https://ai-builder-lab.com/runs/$COLLECTION_ID?format=json")
             [[ "$collection_status" == 200 ]] || { echo "Public collection returned HTTP $collection_status" >&2; exit 1; }
             echo 'Public collection response downloaded.'
           fi
