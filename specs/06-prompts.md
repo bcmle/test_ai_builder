@@ -60,6 +60,8 @@ All generated product-facing analysis, cards, explanations, status messages and 
 
 ## LangGraph input boundary v1.1
 
+Уточнение исполнения v1.3: независимая P02V-проверка применимости выполняется одним пакетным запросом для критериев с предварительным pass/fail. Вход содержит правила, evidence IDs и общий пакет документов без результатов/уверенности/объяснений исследователя; выход — ровно один supports_pass/supports_fail/insufficient с criterion_id и причиной на каждый запрошенный критерий. Итоги сопоставляются отдельно, несовпадение остаётся unknown. Это сокращает API-задержку без ослабления обязательных фильтров.
+
 GraphState/checkpoint/trace не являются входом промпта. Каждый узел формирует пакет по роли и whitelist; общие messages/history/reports не передаются через автоматическую сериализацию состояния. Verifier получает только разрешённый handoff, Critic никогда не получает Verifier output. Resume использует ту же зафиксированную версию промпта и входа либо создаёт новую аналитическую ревизию по правилам; checkpoint IDs не выдаются как evidence IDs. Секреты и приватные billing payload отсутствуют во всех prompts/tool outputs.
 
 ## Конфигурация и проверка качества v1.2
