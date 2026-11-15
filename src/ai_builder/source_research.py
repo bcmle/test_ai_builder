@@ -69,15 +69,28 @@ class SourceResearchPlan(FrozenContract):
     parser_limits: ParserLimits = Field(default_factory=ParserLimits)
     priority_primary_urls: tuple[str, ...] = Field(default=(), max_length=16)
     derived_from_run_id: str | None = None
+    supplemented_from_run_id: str | None = None
+    supplement_reason: str | None = Field(default=None, min_length=1, max_length=2000)
 
     @model_validator(mode='after')
     def version_bounds(self):
         if self.schema_version == '1' and (not self.queries or len(self.queries) > 4 or self.max_new_reads > 6
-                                            or self.priority_primary_urls or self.derived_from_run_id is not None):
+                                            or self.priority_primary_urls or self.derived_from_run_id is not None
+                                            or self.supplemented_from_run_id is not None):
             raise ValueError('Version 1 permits four queries, six reads and no direct primary leads')
+        if self.derived_from_run_id is not None and self.supplemented_from_run_id is not None:
+            raise ValueError('Derived and supplemental source revisions are mutually exclusive')
+        if self.supplement_reason is not None and self.supplemented_from_run_id is None:
+            raise ValueError('Supplement reason belongs only to a supplemental revision')
         if self.derived_from_run_id is not None:
             if not self.derived_from_run_id.strip() or self.queries or not self.priority_primary_urls:
                 raise ValueError('Derived source plan requires a parent, selected primary URLs and no new queries')
+        elif self.supplemented_from_run_id is not None:
+            if (not self.supplemented_from_run_id.strip() or self.queries
+                    or not 1 <= len(self.priority_primary_urls) <= 5
+                    or not len(self.priority_primary_urls) <= self.max_new_reads <= 5
+                    or not self.supplement_reason or not self.supplement_reason.strip()):
+                raise ValueError('Supplemental source plan requires a parent, one to five new URLs and no queries')
         elif not self.queries:
             raise ValueError('A source acquisition plan requires at least one query')
         urls = [canonical_url(url) for url in self.priority_primary_urls]
@@ -92,6 +105,10 @@ class SourceResearchPlan(FrozenContract):
             value.pop('priority_primary_urls', None)
         if self.derived_from_run_id is None:
             value.pop('derived_from_run_id', None)
+        if self.supplemented_from_run_id is None:
+            value.pop('supplemented_from_run_id', None)
+        if self.supplement_reason is None:
+            value.pop('supplement_reason', None)
         return value
 
     def fetch_limits(self):
@@ -449,6 +466,93 @@ async def _initialize_retained_sources(ledger, plan, artifacts):
             'retained_full_documents': True, 'new_document_reads': 0, 'new_provider_calls': 0})
 
 
+async def _initialize_supplemented_sources(ledger, plan, artifacts):
+    """One explicitly requested evidence addition to a completed needs-review run."""
+    async with ledger.locked(ledger.run_id, fenced=True) as (conn, _, run):
+        existing = await (await conn.execute('SELECT 1 FROM app.source_research WHERE run_id=%s AND scope_id=%s',
+                                             (ledger.run_id, plan.seed.scope_id))).fetchone()
+        if existing:
+            return  # Resume validates the immutable plan in the common initializer.
+        parent = await (await conn.execute('SELECT * FROM app.runs WHERE id=%s',
+                                           (plan.supplemented_from_run_id,))).fetchone()
+        saved_context = await (await conn.execute('SELECT context,context_hash FROM app.research_contexts WHERE run_id=%s',
+                                                  (plan.supplemented_from_run_id,))).fetchone()
+        packets = await (await conn.execute('SELECT * FROM app.source_research WHERE run_id=%s',
+                                            (plan.supplemented_from_run_id,))).fetchall()
+        if (run['status'] not in {'selecting', 'queued', 'running'} or not parent
+                or parent['status'] not in {'partial', 'completed'} or parent['study_id'] != run['study_id']
+                or parent['config_hash'] != run['config_hash'] or parent['config_json'] != run['config_json']
+                or not saved_context or digest(saved_context['context']) != saved_context['context_hash']
+                or len(packets) != 1 or packets[0]['state'] != 'frozen'):
+            raise Conflict('Supplement requires a completed frozen parent in the same study and configuration')
+        if await (await conn.execute('''SELECT 1 FROM app.usage WHERE run_id=%s AND state IN ('reserved','unknown')
+            UNION ALL SELECT 1 FROM app.provider_operations WHERE run_id=%s AND state<>'completed'
+            UNION ALL SELECT 1 FROM app.run_leases WHERE run_id=%s AND expires_at>clock_timestamp() LIMIT 1''',
+            (parent['id'], parent['id'], parent['id']))).fetchone():
+            raise Conflict('Supplement requires no active parent owner or uncertain provider operation')
+        source = packets[0]
+        parent_plan = SourceResearchPlan.model_validate(source['plan'])
+        cards = await (await conn.execute('''SELECT result FROM app.node_receipts
+            WHERE run_id=%s AND scope_id=%s AND node_name='card' ''',
+            (parent['id'], parent_plan.seed.scope_id))).fetchall()
+        if (len(cards) != 1 or cards[0]['result'].get('eligibility') != 'needs_review'
+                or cards[0]['result'].get('assessment_scope_id') != parent_plan.seed.scope_id):
+            raise Conflict('Supplement requires an accepted needs-review card for the parent scope')
+        if (parent_plan.supplemented_from_run_id is not None
+                or await (await conn.execute('''SELECT 1 FROM app.source_research
+                    WHERE plan->>'supplemented_from_run_id'=%s LIMIT 1''', (parent['id'],))).fetchone()):
+            raise Conflict('Only one supplemental revision is allowed; resume its saved run')
+        if (digest(source['plan']) != source['plan_hash']
+                or saved_context['context']['plan'] != source['plan']
+                or digest({'scope': source['packet'], 'gaps': source['gaps']}) != source['packet_hash']
+                or parent_plan.seed.base_model_id != plan.seed.base_model_id
+                or parent_plan.seed.neutral_model_description != plan.seed.neutral_model_description
+                or parent_plan.seed.scope_id == plan.seed.scope_id
+                or parent_plan.seed.variant_id == plan.seed.variant_id):
+            raise Conflict('Supplement differs from its frozen parent model or scope')
+        rows = await _result_rows(conn, parent['id'], parent_plan.seed.scope_id)
+        verified = _materialize(parent_plan, rows, artifacts)
+        if (verified.scope.model_dump(mode='json') != source['packet']
+                or [gap.model_dump(mode='json') for gap in verified.gaps] != source['gaps']
+                or len(verified.scope.documents) != 10):
+            raise Conflict('Supplement must preserve the ten verified full parent documents')
+        parent_urls = {canonical_url(row['url']) for row in rows if row['url']}
+        parent_urls.update(canonical_url(doc.url) for doc in verified.scope.documents)
+        if any(canonical_url(url) in parent_urls for url in plan.priority_primary_urls):
+            raise Conflict('Supplemental URLs must be new; parent source reads are not repeated')
+        by_snapshot = {row['snapshot_id']: row for row in rows if row['snapshot_state'] == 'succeeded'}
+        retained = [by_snapshot[doc.snapshot_id] for doc in verified.scope.documents]
+        value, retained_id, new_id = plan.model_dump(mode='json'), uid(), uid()
+        manifest = {'source_run_id': parent['id'], 'reason': plan.supplement_reason,
+                    'retained': [{'result_id': row['id'], 'snapshot_id': row['snapshot_id'],
+                                  'manifest_ref': row['manifest_ref']} for row in retained],
+                    'new_primary_urls': list(plan.priority_primary_urls)}
+        await conn.execute('INSERT INTO app.source_research(run_id,scope_id,plan_hash,plan) VALUES (%s,%s,%s,%s)',
+                           (ledger.run_id, plan.seed.scope_id, digest(value), Jsonb(value)))
+        for index, query_id, kind, payload in (
+                (0, retained_id, 'retained_primary_urls', {'source_run_id': parent['id'],
+                    'source_result_refs': manifest['retained'], 'manifest_hash': digest(manifest)}),
+                (1, new_id, 'supplemental_primary_urls', {'urls': list(plan.priority_primary_urls),
+                    'manifest_hash': digest(manifest)})):
+            await conn.execute('''INSERT INTO app.source_queries
+                (id,run_id,scope_id,query_index,operation_key,query,state,completed_at)
+                VALUES (%s,%s,%s,%s,%s,%s,'succeeded',clock_timestamp())''',
+                (query_id, ledger.run_id, plan.seed.scope_id, index,
+                 'source-supplement:' + digest({'scope': plan.seed.scope_id, 'kind': kind}),
+                 Jsonb({'kind': kind, **payload})))
+        for rank, row in enumerate(retained, 1):
+            await conn.execute('''INSERT INTO app.source_results
+                (id,query_id,result_rank,url,disposition,reason,snapshot_id)
+                VALUES (%s,%s,%s,%s,'duplicate','retained_frozen_source',%s)''',
+                (uid(), retained_id, rank, row['url'], row['snapshot_id']))
+        for rank, url in enumerate(plan.priority_primary_urls, 1):
+            await conn.execute('INSERT INTO app.source_results(id,query_id,result_rank,url) VALUES (%s,%s,%s,%s)',
+                               (uid(), new_id, rank, url))
+        await ledger.event(conn, ledger.run_id, 'source_supplement_manifest_frozen',
+                           {**manifest, 'manifest_hash': digest(manifest), 'scope_id': plan.seed.scope_id,
+                            'retained_full_documents': True, 'new_search_calls': 0})
+
+
 def _materialize(plan, rows, artifacts):
     """Verify every retained artifact, including unsuccessful source reads."""
     documents, gaps, seen = [], [], set()
@@ -496,6 +600,8 @@ async def prepare_scope(ledger, plan: SourceResearchPlan, search_factory, fetch_
     """
     if plan.derived_from_run_id is not None:
         await _initialize_retained_sources(ledger, plan, artifacts)
+    elif plan.supplemented_from_run_id is not None:
+        await _initialize_supplemented_sources(ledger, plan, artifacts)
     saved = await _initialize(ledger, plan)
     if saved:
         verified = _materialize(plan, await _results(ledger, plan.seed.scope_id), artifacts)

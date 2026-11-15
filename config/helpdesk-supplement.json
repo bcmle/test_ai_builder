@@ -1,0 +1,12 @@
+{
+  "schema_version": "1",
+  "base_model_id": "ae008373040d411c9e922e38082e8f13",
+  "reason": "Resolve the saved F01/F03 evidence gaps concerning industry-specific licensing, the proposed own-software merchant role, and the external payment provider's role and authorizations. Preserve the scenario and criteria; the new evidence may support, contradict or leave the criteria unresolved.",
+  "priority_primary_urls": [
+    "https://gov.texas.gov/business/page/business-permits-office",
+    "https://www.tdlr.texas.gov/licenses.htm",
+    "https://www.dob.texas.gov/applications-forms-publications/notice-applicants",
+    "https://stripe.com/legal/spc",
+    "https://stripe.com/legal/spc/licenses"
+  ]
+}

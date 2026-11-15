@@ -26,9 +26,11 @@ from .store import Conflict, uid
 async def run_focused(pool, artifacts, *, parent_collection_id, model_id,
                       openai_key='', tavily_key='', data_dir=None,
                       config_dir='config', retry_paused=False,
-                      refine_sources=False,
+                      refine_sources=False, supplement_sources=False,
                       provider_client=None, fetch_document=None, parser=None):
     """Create once, then resume from stored context; no fresh study allocation."""
+    if refine_sources and supplement_sources:
+        raise ValueError('Choose one explicit source revision action')
     async with pool.connection() as conn:
         row = await (await conn.execute('SELECT coordinator_run_id FROM app.collections WHERE id=%s',
                                        (parent_collection_id,))).fetchone()
@@ -64,7 +66,31 @@ async def run_focused(pool, artifacts, *, parent_collection_id, model_id,
             context = ResearchContext.model_validate(latest['context'])
             from .config import Configuration
             config = Configuration.model_validate(latest['config_json'])
-            if refine_sources and not context.plan.derived_from_run_id:
+            if supplement_sources and not context.plan.supplemented_from_run_id:
+                if latest['status'] not in {'partial', 'completed'}:
+                    raise Conflict('Source supplementation requires a completed needs-review analysis')
+                # Existing read-only replay verifies full source integrity and a
+                # terminal graph checkpoint without another provider request.
+                previous = await run_research(pool, artifacts, resume_run=run_id,
+                                              provider_client=provider_client)
+                if (not previous.prepared.scope.documents
+                        or previous.state.get('card', {}).get('eligibility') != 'needs_review'):
+                    raise Conflict('Source supplementation requires a needs-review card')
+                manifest = json.loads((Path(config_dir) / 'helpdesk-supplement.json').read_text())
+                if (set(manifest) != {'schema_version', 'base_model_id', 'reason', 'priority_primary_urls'}
+                        or manifest['schema_version'] != '1' or manifest['base_model_id'] != model_id):
+                    raise Conflict('Supplement manifest differs from the selected base model')
+                previous_run = run_id
+                plan = SourceResearchPlan.model_validate({**context.plan.model_dump(mode='json'),
+                    'derived_from_run_id': None, 'supplemented_from_run_id': previous_run,
+                    'supplement_reason': manifest['reason'], 'queries': [], 'max_new_reads': 5,
+                    'priority_primary_urls': manifest['priority_primary_urls'],
+                    'seed': {**context.plan.seed.model_dump(mode='json'), 'scope_id': uid(), 'variant_id': uid()}})
+                context = ResearchContext.model_validate({**context.model_dump(mode='json'), 'plan': plan.model_dump(mode='json')})
+                run_id = await create_research_run(pool, config, context, study_id=collection['study_id'])
+                print(f'Evidence supplement: {previous_run} -> {run_id}; retained={len(previous.prepared.scope.documents)}; '
+                      f'new primary URLs={len(plan.priority_primary_urls)}; no repeated search', flush=True)
+            elif refine_sources and not context.plan.derived_from_run_id:
                 if latest['status'] != 'paused':
                     raise Conflict('Source refinement requires a paused oversized analysis')
                 async with parent_ledger.locked(coordinator, fenced=True) as (conn, _, __):
@@ -98,6 +124,8 @@ async def run_focused(pool, artifacts, *, parent_collection_id, model_id,
                 await _resume_child(parent_ledger, parent_collection_id, run_id,
                                     reason='Owner invoked focused --retry-paused; original limits and inputs retained')
         else:
+            if supplement_sources:
+                raise Conflict('Source supplementation requires an existing needs-review analysis')
             if refine_sources:
                 raise Conflict('Source refinement requires an existing paused oversized analysis')
             if not openai_key or not tavily_key:
@@ -130,6 +158,9 @@ async def run_focused(pool, artifacts, *, parent_collection_id, model_id,
         if context.plan.derived_from_run_id:
             model['limitations'].append('This revision analyses the previously acquired primary-source documents. '
                 'Supplementary documents remain preserved in the earlier research record and are not included in this assessment.')
+        if context.plan.supplemented_from_run_id:
+            model['limitations'].append('This revision retains the complete prior primary-source packet and adds targeted '
+                'regulatory and payment-provider documents. The earlier assessment and its costs remain in the research history.')
         async with parent_ledger.locked(coordinator, fenced=True) as (conn, _, __):
             row = await (await conn.execute('SELECT created_at FROM app.runs WHERE id=%s', (run_id,))).fetchone()
             now = datetime.now(timezone.utc).isoformat()
@@ -175,7 +206,8 @@ async def run(args):
         return await run_focused(pool, ArtifactStore(data / 'evidence'),
             parent_collection_id=args.parent_collection, model_id=args.model_id,
             openai_key=os.environ.get('OPENAI_API_KEY', ''), tavily_key=os.environ.get('TAVILY_API_KEY', ''),
-            data_dir=data, retry_paused=args.retry_paused, refine_sources=args.refine_sources)
+            data_dir=data, retry_paused=args.retry_paused, refine_sources=args.refine_sources,
+            supplement_sources=args.supplement_sources)
 
 
 def main():
@@ -184,6 +216,7 @@ def main():
     cli.add_argument('--model-id', required=True)
     cli.add_argument('--retry-paused', action='store_true')
     cli.add_argument('--refine-sources', action='store_true', help='Create a primary-source revision of an oversized paused input without refetching')
+    cli.add_argument('--supplement-sources', action='store_true', help='Add the packaged primary evidence manifest to a completed needs-review analysis')
     try:
         asyncio.run(run(cli.parse_args()))
     except Exception as error:

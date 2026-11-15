@@ -107,6 +107,8 @@ def test_v2_plan_bounds_primary_urls_and_legacy_serialization():
         'schema_version', 'seed', 'queries', 'max_new_reads', 'acquisition_limits', 'parser_limits')}
     assert 'priority_primary_urls' not in legacy.model_dump(mode='json')
     assert 'derived_from_run_id' not in legacy.model_dump(mode='json')
+    assert 'supplemented_from_run_id' not in legacy.model_dump(mode='json')
+    assert 'supplement_reason' not in legacy.model_dump(mode='json')
     assert set(legacy.model_dump()) == set(expected)
     assert SourceResearchPlan.model_validate_json(legacy.model_dump_json()).model_dump_json() == legacy.model_dump_json()
     v2 = SourceResearchPlan.model_validate({**legacy.model_dump(), 'schema_version': '2',
@@ -125,6 +127,78 @@ def test_v2_plan_bounds_primary_urls_and_legacy_serialization():
                     {'priority_primary_urls': []}, {'derived_from_run_id': ''}, {'schema_version': '1'}):
         with pytest.raises(ValidationError):
             SourceResearchPlan.model_validate({**derived.model_dump(), **invalid})
+    supplemental = SourceResearchPlan.model_validate({**v2.model_dump(), 'queries': (), 'max_new_reads': 5,
+        'supplemented_from_run_id': 'needs-review-parent', 'supplement_reason': 'Check missing industry rules.'})
+    assert supplemental.derived_from_run_id is None
+    for invalid in ({'derived_from_run_id': 'another-parent'}, {'max_new_reads': 6},
+                    {'priority_primary_urls': [f'https://example.com/{n}' for n in range(6)]},
+                    {'supplement_reason': None}, {'supplement_reason': '  '},
+                    {'queries': [SearchQueryPlan(query='new paid query')]}):
+        with pytest.raises(ValidationError):
+            SourceResearchPlan.model_validate({**supplemental.model_dump(), **invalid})
+
+
+@database
+def test_supplement_retains_ten_sources_reads_only_new_urls_and_replays(config, tmp_path):
+    async def check():
+        await migrate(DSN)
+        async with execution_pool(DSN) as pool:
+            parent, study, _ = await setup(pool, config)
+            artifacts = ArtifactStore(tmp_path)
+            original = SourceResearchPlan.model_validate({**plan().model_dump(), 'schema_version': '2',
+                'max_new_reads': 10,
+                'priority_primary_urls': [f'https://example.com/primary-{index}' for index in range(10)]})
+            harness = Harness(parent, artifacts, {})
+            full = await harness.prepare(original)
+            assert len(full.scope.documents) == 10
+            await parent.receipt(original.seed.scope_id, 'card', 'finished-parent-card', 'fixture-input',
+                                 {'assessment_scope_id': original.seed.scope_id, 'eligibility': 'needs_review'})
+            saved_context = {'plan': original.model_dump(mode='json'), 'openai_pricing': pricing().model_dump(mode='json')}
+            async with pool.connection() as conn:
+                await conn.execute('INSERT INTO app.research_contexts(run_id,context_hash,context) VALUES (%s,%s,%s)',
+                                   (parent.run_id, digest(saved_context), Jsonb(saved_context)))
+                await conn.execute("UPDATE app.runs SET status='partial' WHERE id=%s", (parent.run_id,))
+            parent_usage = await parent.summary(parent.run_id)
+            child, _, _ = await setup(pool, config, study=study)
+            supplement = SourceResearchPlan.model_validate({**original.model_dump(),
+                'seed': original.seed.model_copy(update={'scope_id': uid(), 'variant_id': uid()}),
+                'queries': (), 'max_new_reads': 2, 'supplemented_from_run_id': parent.run_id,
+                'supplement_reason': 'Review specific licensing and payment-provider conditions.',
+                'priority_primary_urls': ['https://example.com/regulator', 'https://example.com/operator']})
+
+            def forbidden(*args, **kwargs):
+                raise AssertionError('Supplement must not call Tavily or repeat completed source work')
+
+            new_reads = []
+
+            async def fetch(url):
+                new_reads.append(url)
+                return response(url)
+
+            with pytest.raises(Conflict, match='no active parent'):
+                await prepare_scope(child, supplement, forbidden, fetch, artifacts, parser=parse_fixture)
+            assert not new_reads
+            async with pool.connection() as conn:
+                await conn.execute('UPDATE app.run_leases SET expires_at=clock_timestamp() WHERE run_id=%s', (parent.run_id,))
+            completed = await prepare_scope(child, supplement, forbidden, fetch, artifacts, parser=parse_fixture)
+            assert new_reads == list(supplement.priority_primary_urls)
+            assert len(completed.scope.documents) == 12
+            assert completed.scope.documents[:10] == full.scope.documents
+            assert (await prepare_scope(child, supplement, forbidden, forbidden, artifacts, parser=forbidden)) == completed
+            usage = await child.summary(child.run_id)
+            assert usage['controlled_document_attempts'] == 2 and not usage['requests']
+            assert await parent.summary(parent.run_id) == parent_usage
+            async with pool.connection() as conn:
+                event = await (await conn.execute("SELECT payload FROM app.events WHERE run_id=%s AND kind='source_supplement_manifest_frozen'",
+                                                  (child.run_id,))).fetchone()
+            assert len(event['payload']['retained']) == 10 and event['payload']['reason'] == supplement.supplement_reason
+            second, _, _ = await setup(pool, config, study=study)
+            another = SourceResearchPlan.model_validate({**supplement.model_dump(),
+                'seed': supplement.seed.model_copy(update={'scope_id': uid(), 'variant_id': uid()})})
+            with pytest.raises(Conflict, match='Only one supplemental revision'):
+                await prepare_scope(second, another, forbidden, forbidden, artifacts, parser=forbidden)
+            await harness.close()
+    asyncio.run(check())
 
 
 @database

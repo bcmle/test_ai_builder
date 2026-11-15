@@ -117,6 +117,18 @@ download is repeated. Subsequent invocations resume the latest revision.
 python -m ai_builder.focused_research --parent-collection COLLECTION_ID --model-id MODEL_ID --refine-sources
 ```
 
+After a completed graph returns `needs_review`, `--supplement-sources` creates one
+linked revision from the packaged `config/helpdesk-supplement.json`. It retains
+every full parent document and reads at most five additional primary URLs through
+the existing controlled fetcher. Tavily is not called. The unchanged business
+scenario and criteria are reanalysed in a new scope with metered LLM operations;
+previous results and costs stay intact. Repeated commands resume that revision,
+without rereading the local manifest or creating additional runs.
+
+```sh
+python -m ai_builder.focused_research --parent-collection COLLECTION_ID --model-id MODEL_ID --supplement-sources
+```
+
 Role outputs undergo schema and semantic validation before acceptance. An invalid
 output receives at most two metered corrections; every saved raw response and
 correction is replayable. Refusals, authentication/quota errors and unknown billing
