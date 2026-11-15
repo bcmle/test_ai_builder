@@ -71,8 +71,10 @@ with `bash deploy/bundle-hash.sh` from the selected commit. The hash excludes CI
 helpers and documentation, includes bootstrap/hash scripts, and ignores timestamps
 and checkout paths. It serializes deployments with flock, checks disk, pulls images,
 stops writers, backs up any existing installation, provisions roles, explicitly
-runs migrations/grants, runs smoke, starts web, verifies readiness/preview and repeats
-smoke. A post-run backup is restored into a new scratch database and directory, where
+runs migrations/grants, runs smoke, starts web and verifies readiness/preview. It
+then stops web, restarts the existing PostgreSQL container without deleting its
+volume, waits for PostgreSQL health, brings web back and rechecks readiness/preview.
+The repeated smoke must reuse the saved run with zero new fixture HTTP calls. A post-run backup is restored into a new scratch database and directory, where
 smoke validates persisted checkpoints, usage and artifacts without new model calls.
 Only then is success recorded in `/var/lib/test-ai-builder/releases/COMMIT.json`.
 
@@ -140,6 +142,6 @@ sudo GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" bas
 ```
 
 It uses a unique CI volume and scratch directory, checks denied runtime DDL, runs the
-actual smoke twice across a web restart, then restores the dump/files into a scratch
+actual smoke twice across a PostgreSQL restart and web stop/start, then restores the dump/files into a scratch
 database and validates them through smoke again. Cleanup removes only that CI project
 and volume. Never upload its generated ci.env or database dump as a public artifact.

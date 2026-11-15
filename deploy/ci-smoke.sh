@@ -36,8 +36,14 @@ curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/health/ready >/de
 curl --fail --silent --show-error http://127.0.0.1:8080/preview > "$WORK/preview.html"
 grep -q 'Not a live market assessment' "$WORK/preview.html"
 cp "$WORK/data/technical-preview.json" "$WORK/first-preview.json"
-compose restart web
+# Restart the actual stateful service, not only the stateless web container.
+# No recreation, volume removal or migration is involved in this recovery check.
+compose stop web
+compose restart postgres
+compose up -d --wait postgres
 compose up -d --wait web
+curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/health/ready >/dev/null
+curl --fail --silent --show-error http://127.0.0.1:8080/preview >/dev/null
 compose run --rm --no-deps smoke
 # Inspect persisted smoke identity and costs without relying on command log formatting.
 python3 - "$WORK/first-preview.json" "$WORK/data/technical-preview.json" <<'PY'

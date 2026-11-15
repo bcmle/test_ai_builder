@@ -49,8 +49,25 @@ compose run --rm --no-deps smoke
 compose up -d --wait web
 curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/health/ready >/dev/null
 curl --fail --silent --show-error http://127.0.0.1:8080/preview >/dev/null
-# Run the same smoke again: it must validate persisted state without new logical work.
+cp "$STATE/data/technical-preview.json" "$STATE/releases/$COMMIT-first-preview.json"
+# Prove the DB, checkpoints and files survive a real PostgreSQL container restart.
+# Stop web first; preserve the existing container and named volume.
+compose stop web
+compose restart postgres
+compose up -d --wait postgres
+compose up -d --wait web
+curl --fail --silent --show-error http://127.0.0.1:8080/api/v1/health/ready >/dev/null
+curl --fail --silent --show-error http://127.0.0.1:8080/preview >/dev/null
+# The repeated smoke must validate persisted state without new logical work.
 compose run --rm --no-deps smoke
+python3 -I - "$STATE/releases/$COMMIT-first-preview.json" "$STATE/data/technical-preview.json" <<'PY'
+import json, sys
+first, second = [json.load(open(p)) for p in sys.argv[1:]]
+for key in ('run_id', 'synthetic_calculated_micro', 'physical_attempts', 'evidence_manifest'):
+    assert first[key] == second[key], key
+assert second['external_api_calls'] == 0
+assert second['fixture_http_calls_this_invocation'] == 0
+PY
 compose stop web smoke
 "$ROOT/deploy/backup.sh" --first-existing
 IFS= read -r LATEST_BACKUP < "$STATE/latest-backup"
