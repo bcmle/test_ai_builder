@@ -1,6 +1,6 @@
 # 08. Архитектура, конфигурация и API
 
-Статус: DRAFT v0.1. Предложение: один сервер, модульное приложение, отдельный worker. Не утверждённый стек.
+Статус: DRAFT v0.2. Предложение: один сервер, модульное приложение, отдельный worker. Не утверждённый стек.
 
 ## Компоненты
 
@@ -47,3 +47,13 @@ Resume переиспользует succeeded stages при совпадении
 ## Группы конфигурации
 
 schema_version; launch_context; discovery(target=12, directions, excluded_markets); criteria[]; scoring(factors, weights, rubrics, rounding); providers(role_model_ids, API endpoint allowlist); prompts(versions); limits(time, concurrency, requests, tokens, cost); source_policy; publishing. Secret values только env/secret files, конфиг хранит имена переменных. Невалидный вес, отсутствующий model ID или отсутствующие ключи блокируют live run до расхода средств. Replay не требует ключей, но маркируется отдельно.
+
+## Дополнение v0.2: стек для выбранного объёма и Aeza
+
+Предложенный стек сохраняется: Python/FastAPI + Jinja/HTML/CSS + небольшой JavaScript, отдельный Python worker, SQLite WAL, Docker Compose. Reverse proxy — Caddy с TLS. Это позволяет сделать полноценные карточки, фильтры, сравнение, раскрытие доказательств и интерфейс владельца без отдельной SPA. Внешний вид Kelpie не требует определённого frontend-фреймворка. CSS-компоненты/токены описаны в 09-interface; код пока не создаём.
+
+Развёртывание предполагает VPS на Aeza с доступом к Docker и постоянному диску, а не только размещение статических файлов. Конкретный тариф/ОС/регион пользователь ещё не указал. Базовый путь контейнеризации описан в [официальной документации FastAPI](https://fastapi.tiangolo.com/deployment/docker/). Не предполагаем наличие готового тарифа Aeza или доступность API из любой страны.
+
+SQLite остаётся для первого прототипа с одним worker и ограниченным числом одновременных задач; международный охват сам по себе не требует распределённой архитектуры. При росте числа одновременных запусков или измеренном конфликте записей — отдельная спецификация перехода на PostgreSQL. Нельзя обещать текущему варианту неограниченный мировой объём.
+
+Дополнительные API для исследования рынков: GET /studies (опубликованные обзоры гостю), GET /studies/{id}/coverage (покрытие без приватных payload), POST /studies (owner: scope/config), POST /studies/{id}/close (owner: expected_revision, reason; требует ready_to_close), POST /studies/{id}/defer (owner: candidate IDs, reason). Открытие следующего рынка — новое owner-создание study после закрытия текущего; все исключения отражаются в истории. POST /runs получает study_id; его market/scenario сверяются со study. Обновления исследования версионируются и публикуются по правилам снимков, как run. Лимит денежных расходов задаётся также на study, чтобы много маленьких run не обходили общий предел.

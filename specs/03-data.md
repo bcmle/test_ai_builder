@@ -1,6 +1,6 @@
 # 03. Контракты данных и состояния
 
-Статус: DRAFT v0.1. Это описание будущих схем, не исполняемые JSON Schema.
+Статус: DRAFT v0.2. Это описание будущих схем, не исполняемые JSON Schema.
 
 ## Общие правила
 
@@ -48,3 +48,14 @@ method: primary_source / secondary_source / calculation / model_judgment / human
 - Все ссылки, claim IDs и evidence IDs существуют в пределах разрешённого run.
 - Утверждение не становится supported только из-за URL; нужна проверенная связь с содержанием.
 - Ручная правка и повтор этапа создают ревизии. Published snapshot остаётся неизменным до явного publish новой ревизии.
+
+## Дополнение v0.2: накопительное исследование рынков
+
+- MarketStudy: id, market_code, scope_version, directions, source_families, date_window, languages, query_plan, status(active/paused/ready_to_close/closed), owner_decision nullable, cumulative_budget, started_at, closed_at nullable.
+- CoverageCell: study_id, direction_id, source_family_id, status(pending/in_progress/covered/blocked), query_ids, discovered_url_ids, read_source_ids, gap_reason nullable.
+- DiscoveryCycle: study_id, cycle_id, query_ids, newly_read_unique_pages, newly_discovered_unique_models, novelty_ratio nullable. При знаменателе 0 ratio=null, насыщение не засчитывается.
+- CandidateBacklog: global_model_id, study_id, evidence_ids, state(new/selected/processed/deferred/duplicate), run_ids, deferral_reason nullable, duplicate_of nullable.
+- Run дополнительно хранит study_id и market_code. ID модели глобален в рамках приложения; факты, роли, оценки и результаты рынка относятся к run/model/market, не перезаписывают результаты другой страны.
+- Ранее описанный алгоритм выбора 12 применяется внутри очереди текущего рынка. Переход между рынками не происходит после одного batch автоматически.
+
+Эти контракты расширяют v0.1. Финальные миграции будут проектироваться после ревью, существующей базы приложения пока нет.
