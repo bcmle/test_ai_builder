@@ -1,6 +1,10 @@
 # 06. Спецификация промптов v1.1
 
-Статус: APPROVED BASELINE v1.2 (пользователь, 15.11.2026).
+Статус: APPROVED BASELINE v1.3 (пользователь, 15.11.2026).
+
+Для прототипа все модели получают один сценарий США/два человека/$15 000 без зарплат/90 дней и явно предложенный поток денег (предоплата подписки или комиссия без хранения чужих средств). Юрисдикция: `United States (federal scope; state-specific requirements unresolved where applicable)`. Не придумывать штат, не переносить обязанности компании-аналога на наш бизнес и не выводить pass из одних допущений. Сохраняются строгие схемы, нейтральный handoff, паспорта и проверка фактических оснований факторов/плана по 04-validation. Расширенный платный eval ниже отложен после прототипа, набор из 12 кейсов не заменяется числом бизнес-моделей.
+
+Новые ответы запрашивают method/confidence/confidence_reason/assumptions для Claim; старые ответы совместимы с отсутствующими полями. Причина Criterion — суждение модели с основаниями и известными датами, не выдуманная цитата. Поля оценки/уверенности/допущений автора и affected criterion не передаются Verifier; нейтральные предпосылки доступны через текст/input claims.
 
 ## Сборка запроса
 
@@ -46,7 +50,7 @@ System = общие правила + роль. User = сериализованн
 
 Служебные промпты с отдельными версиями: P02V получает критерий и evidence-пакет без результата исследователя, возвращает supports_pass/supports_fail/insufficient с применимостью к scope; несовпадение с P02 требует unknown, не голосования. P03N получает только neutral_text и определение scope, возвращает accept/reject/uncertain: отклонить оценку перспективности, уверенность автора, приоритет и команды; неоднозначность не исправлять пересказом. Их результаты валидируются и логируются, исключены из handoff. Источники остаются недоверенными данными.
 
-Structured output ограничивает формат, но не доказательность. Кандидат для адаптера — [Claude structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs). Доступность конкретной модели и совместимость схем проверяются перед фиксацией model ID; сам провайдер пока не утверждён.
+Structured output ограничивает формат, но не доказательность. Используется уже подключённый адаптер OpenAI Responses с gpt-6-astra и зафиксированными настройками ролей; выбор нового провайдера не требуется. Корректность JSON не заменяет проверку доказательств и изоляции.
 
 Все ролевые входы P02–P05 содержат assessment_scope_id и выбранный вариант. Нельзя переносить вывод с другого сегмента без доказанной применимости. P01 не использует ожидаемый score при классификации и не принимает решение о включении в CEO-подборку; состав вычисляет оркестратор по 13-catalog.
 
@@ -55,6 +59,8 @@ Structured output ограничивает формат, но не доказа�
 All generated product-facing analysis, cards, explanations, status messages and exports are in English. Preserve original source quotations and stable IDs. LLMs do not invent token usage or dollar costs: usage and billing values are populated by adapters and deterministic accounting. Approved bounded intervals are valid final factor inputs; the deterministic ranker uses conservative bounds and goal-feasibility groups from 07-ranking.
 
 ## LangGraph input boundary v1.1
+
+Уточнение исполнения v1.3: независимая P02V-проверка применимости выполняется одним пакетным запросом для критериев с предварительным pass/fail. Вход содержит правила, evidence IDs и общий пакет документов без результатов/уверенности/объяснений исследователя; выход — ровно один supports_pass/supports_fail/insufficient с criterion_id и причиной на каждый запрошенный критерий. Итоги сопоставляются отдельно, несовпадение остаётся unknown. Это сокращает API-задержку без ослабления обязательных фильтров.
 
 GraphState/checkpoint/trace не являются входом промпта. Каждый узел формирует пакет по роли и whitelist; общие messages/history/reports не передаются через автоматическую сериализацию состояния. Verifier получает только разрешённый handoff, Critic никогда не получает Verifier output. Resume использует ту же зафиксированную версию промпта и входа либо создаёт новую аналитическую ревизию по правилам; checkpoint IDs не выдаются как evidence IDs. Секреты и приватные billing payload отсутствуют во всех prompts/tool outputs.
 

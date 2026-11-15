@@ -14,6 +14,8 @@ printf 'AI_BUILDER_IMAGE=%s\nPOSTGRES_IMAGE=%s\nPOSTGRES_PASSWORD=%s\nMIGRATOR_P
 printf 'services:\n  web:\n    volumes:\n      - "%s/data:/app/data"\n  migrate:\n    volumes:\n      - "%s/data:/app/data"\n  smoke:\n    volumes:\n      - "%s/data:/app/data"\nvolumes:\n  postgres-data:\n    name: "%s-pgdata"\n' "$WORK" "$WORK" "$WORK" "$PROJECT" > "$WORK/override.yaml"
 compose() { docker compose -p "$PROJECT" --project-directory "$SOURCE" --env-file "$WORK/ci.env" -f "$SOURCE/compose.yaml" -f "$WORK/override.yaml" "$@"; }
 cleanup() {
+  local result=$?
+  if (( result != 0 )); then compose logs --no-color --tail 60 web caddy || true; fi
   # Only the unique CI project/volume is removed, never the production project.
   compose down --volumes --remove-orphans >/dev/null || true
   # Keep the temp reports for CI artifact collection and diagnosis; no recursive rm.
@@ -69,3 +71,10 @@ compose exec -T postgres psql -X -qAt -U postgres -d ai_builder_ci_restore < "$S
 cmp "$WORK/fingerprint.txt" "$WORK/restored-fingerprint.txt"
 # Only publish non-secret artifacts from WORK; ci.env and raw dumps are private.
 echo 'Technical Compose smoke, restart, runtime privileges and restore checks passed.'
+compose up -d --wait web caddy
+curl --fail --silent --show-error http://127.0.0.1/ > "$WORK/public-home.html"
+for path in preview health/ready api/v1/health/ready; do
+  [[ $(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1/$path") == 404 ]]
+done
+[[ $(curl --silent --request POST --output /dev/null --write-out '%{http_code}' http://127.0.0.1/) == 404 ]]
+echo 'Public read-only HTTP routes passed.'

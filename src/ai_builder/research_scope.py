@@ -31,7 +31,7 @@ from .providers import MeteredHTTP, TavilyAdapter
 from .report import render_report
 from .source_documents import parse_document
 from .source_research import FrozenContract, PreparedScope, SourceResearchPlan, prepare_scope
-from .store import BudgetExceeded, Conflict, micro
+from .store import BudgetExceeded, Conflict, micro, uid
 
 
 class ResearchContext(FrozenContract):
@@ -61,23 +61,47 @@ class ResearchRunResult:
     replay: bool
 
 
-async def create_research_run(pool, config: Configuration, context: ResearchContext, study_budget) -> str:
+async def insert_research_run(conn, config: Configuration, context: ResearchContext, study_id: str) -> str:
+    """Insert under the caller's transaction; collection membership is atomic.
+
+    The caller must hold the study lock before any collection/run row locks.
+    No provider call or commit is performed by this helper.
+    """
+    if context.openai_pricing.model != config.model:
+        raise ValueError('Pricing model must match the frozen run configuration')
+    value = ResearchContext.model_validate_json(context.model_dump_json()).model_dump(mode='json')
+    study = await (await conn.execute('SELECT market FROM app.studies WHERE id=%s FOR UPDATE', (study_id,))).fetchone()
+    if not study or study['market'] != config.market:
+        raise ValueError('Research must match the existing study market')
+    run_id = uid()
+    await conn.execute('''INSERT INTO app.runs(id,study_id,config_json,config_hash,limit_micro,status,
+        graph_version,state_schema_version,coordinator_thread_id)
+        VALUES (%s,%s,%s,%s,%s,'selecting','scope-1','1',%s)''',
+        (run_id, study_id, Jsonb(config.model_dump(mode='json')), config.digest(), micro(config.limits.run_cost_usd), uid()))
+    await conn.execute('''INSERT INTO app.run_commands(id,run_id,kind,expected_control_version,idempotency_key,payload)
+        VALUES (%s,%s,'start',1,'start',%s)''', (uid(), run_id, Jsonb({})))
+    await conn.execute('INSERT INTO app.research_contexts(run_id,context_hash,context) VALUES (%s,%s,%s)',
+                       (run_id, digest(value), Jsonb(value)))
+    await PostgresLedger.event(conn, run_id, 'research_context_saved', {'context_hash': digest(value)})
+    return run_id
+
+
+async def create_research_run(pool, config: Configuration, context: ResearchContext, study_budget=None,
+                              *, study_id: str | None = None) -> str:
     """Persist the complete validated context before any search or model call."""
     if context.openai_pricing.model != config.model:
         raise ValueError('Pricing model must match the frozen run configuration')
-    if study_budget is None or micro(study_budget) <= 0:
+    if study_id is not None and study_budget is not None:
+        raise ValueError('Existing study budget cannot be overridden')
+    if study_id is None and (study_budget is None or micro(study_budget) <= 0):
         raise ValueError('An explicit positive study budget is required')
     # Revalidate a serialized copy so later mutation of the caller's dictionaries
     # cannot alter the context executed below.
-    value = ResearchContext.model_validate_json(context.model_dump_json()).model_dump(mode='json')
+    ResearchContext.model_validate_json(context.model_dump_json())
     admin = PostgresLedger(pool)
-    study = await admin.create_study(config.market, study_budget)
-    run_id = await admin.create_run(study, config)
+    study = study_id or await admin.create_study(config.market, study_budget)
     async with pool.connection() as conn, conn.transaction():
-        await conn.execute('INSERT INTO app.research_contexts(run_id,context_hash,context) VALUES (%s,%s,%s)',
-                           (run_id, digest(value), Jsonb(value)))
-        await admin.event(conn, run_id, 'research_context_saved', {'context_hash': digest(value)})
-    return run_id
+        return await insert_research_run(conn, config, context, study)
 
 
 async def _load_context(ledger):
@@ -139,7 +163,8 @@ def _write_report(path: Path, scope, state, usage, mode):
 
 async def run_research(pool, artifacts: ArtifactStore, *, openai_key: str = '', tavily_key: str = '',
                        config: Configuration | None = None, context: ResearchContext | None = None,
-                       study_budget=None, resume_run: str | None = None, output: str | Path | None = None,
+                       study_budget=None, study_id: str | None = None,
+                       resume_run: str | None = None, output: str | Path | None = None,
                        provider_client=None, fetch_document=None, parser=parse_document) -> ResearchRunResult:
     """Run from frozen inputs; injected HTTP/parser boundaries are for fixtures.
 
@@ -148,15 +173,15 @@ async def run_research(pool, artifacts: ArtifactStore, *, openai_key: str = '', 
     expires, or re-export a finished draft. It cannot unpause a run.
     """
     if resume_run:
-        if any(value is not None for value in (config, context, study_budget)):
+        if any(value is not None for value in (config, context, study_budget, study_id)):
             raise ValueError('Resume accepts only saved inputs; changed settings require a new run')
         run_id = resume_run
     else:
-        if config is None or context is None or study_budget is None:
+        if config is None or context is None or (study_budget is None and study_id is None):
             raise ValueError('New research requires configuration, context and explicit study budget')
         if not openai_key or not tavily_key:
             raise ValueError('OPENAI_API_KEY and TAVILY_API_KEY are required')
-        run_id = await create_research_run(pool, config, context, study_budget)
+        run_id = await create_research_run(pool, config, context, study_budget, study_id=study_id)
     token = await acquire_lease(pool, run_id, 'research-cli')
     ledger = PostgresLedger(pool, run_id, token)
     work = heart = None

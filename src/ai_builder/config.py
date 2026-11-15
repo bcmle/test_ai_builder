@@ -19,7 +19,7 @@ class Scenario(Contract):
 
 
 class Limits(Contract):
-    run_cost_usd: Decimal = Field(gt=0, le=25)
+    run_cost_usd: Decimal = Field(gt=0)
     active_seconds: int = Field(gt=0)
     provider_requests: int = Field(gt=0)
     search_requests: int = Field(gt=0)
@@ -30,7 +30,7 @@ class Limits(Contract):
 class Discovery(Contract):
     goal: int = Field(ge=1)
     cap: int = Field(ge=1)
-    target: int = Field(ge=10, le=15)
+    target: int = Field(ge=1, le=20)
 
     @model_validator(mode="after")
     def coherent(self):

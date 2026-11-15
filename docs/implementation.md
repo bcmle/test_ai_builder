@@ -206,3 +206,55 @@ required by the user. Astra requests select Standard processing and explicit cac
 without breakpoints, so automatic cache writes are outside this first execution.
 The manual research-result workflow only downloads an already encrypted HTML report;
 it does not run analysis or expose source files or credentials.
+
+### First real research result
+
+PR #2 merged as `aba30f4825cf3618fa705906d0367996c1b14de4`; manual release
+[43757515178](https://github.com/bcmle/test_ai_builder/actions/runs/43757515178)
+deployed image `sha256:8e970eb855c3061aca60e6f1a731f5dbb83b1050364cafb38d972add52ba89f2`.
+Linux verification passed 226 tests. Application schema is now version 5.
+
+A real one-off invocation ran on Aeza with server-only Astra/Tavily credentials.
+Run `b6bd4e20ca9349e1922da575c68d1944` retrieved five source documents without
+acquisition gaps and produced an English private HTML assessment of appointment
+scheduling software for small US consulting teams. Six mandatory criteria passed;
+F01, F03, F05 and F07 remain unknown (jurisdiction/legal basis, licensing, payment
+obligations and custody). Eligibility is `needs_review`, with no final score.
+Critic and Verifier correctly did not run because the mandatory gate did not pass.
+
+Calculated API usage: **$1.1248**; reserved/unknown: **$0**; remaining configured
+budget: **$23.8752**. These are tariff calculations, not a reconciled invoice.
+The HTML was encrypted on Aeza, downloaded via
+[43758889049](https://github.com/bcmle/test_ai_builder/actions/runs/43758889049),
+decrypted on the owner's Mac and verified against the server SHA-256:
+`c5de52993ce0d166aae9e1a09bfd74ddf06e1025463c9bfa06af6b67ea1ebfeb`.
+
+This demonstrates real search, document acquisition, analytical criteria and a
+visible saved result. It does not establish full evidence acceptance, a live
+Critic/Verifier assessment, catalogue completion or public-site readiness.
+
+## Milestone 6 — v1.3 prototype implementation (2026-11-16)
+
+Specifications were committed before code: 19812ff, then b3dec07 for the batched
+independent applicability check. The new collection runner discovers and freezes
+20 source-backed base-model hypotheses, uses one shared $100 study ledger, processes
+models sequentially and writes sanitized snapshots after each result. PostgreSQL
+migration 006 stores collection context, membership and child identities.
+
+The graph independently checks criterion applicability in one batch, then Critic,
+neutral handoff and Verifier. Factor/test-plan premises receive a separate isolated
+verification before final publication. Unknown/failed mandatory criteria still
+block rating. Confidence/method fields are explicit and remain absent for older
+records that did not supply them; exporting a legacy run does not rescore it.
+
+The English read-only UI has a collection overview with outcome counts, detailed
+cards, source/claim disclosures, comparison of up to three and methodology.
+Local visual checks used the real saved Calendly report: desktop/mobile layout,
+criterion expansion and source links work, without horizontal mobile overflow.
+Empty analytical sections are hidden when the corresponding stages never ran.
+
+Local Python/PostgreSQL verification: **244 passed, 2 skipped** (Linux-only parser
+isolation/runtime privileges are checked in CI). No paid APIs were called in tests.
+The new Caddy profile exposes only public GET/HEAD pages on port80. Deployment and
+the new live collection are pending at this point; results will be appended after
+they actually complete. No fixture result counts as a live collection.

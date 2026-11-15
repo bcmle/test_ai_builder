@@ -17,11 +17,13 @@ def risk(**changes):
 
 
 def test_handoff_carries_transitive_inputs_but_not_critic_opinion():
-    claims = [claim("c1", kind="calculation", formula="c2 * 2", input_claim_ids=["c2"]), claim("c2")]
+    claims = [claim("c1", kind="calculation", formula="c2 * 2", input_claim_ids=["c2"],
+                    confidence='high', confidence_reason='Critic opinion',
+                    assumptions=['Critic forecast'], method='calculation'), claim("c2")]
     result = handoff(claims, [risk()], {"s1"}, {"F01"})
     assert {c.claim_id for c in result} == {"c1", "c2"}
     for c in result:
-        assert not set(c.model_dump()) & {"impact", "confidence", "critic_order", "affected_criterion_ids", "score"}
+        assert not set(c.model_dump()) & {"impact", "confidence", "confidence_reason", "assumptions", "method", "critic_order", "affected_criterion_ids", "score"}
         assert c.evidence_refs[0].excerpt == "$10"
 
 

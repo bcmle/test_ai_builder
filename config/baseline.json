@@ -9,7 +9,7 @@
     "salaries_included": false,
     "days": 90,
     "existing_customers": false,
-    "jurisdiction": null
+    "jurisdiction": "United States (federal scope; state-specific requirements unresolved where applicable)"
   },
   "limits": {
     "run_cost_usd": "25",
@@ -22,7 +22,7 @@
   "discovery": {
     "goal": 40,
     "cap": 50,
-    "target": 12
+    "target": 20
   },
   "criteria": [
     {
