@@ -1,0 +1,50 @@
+name: Fetch public server result
+
+on:
+  workflow_dispatch:
+    inputs:
+      collection_id:
+        description: Optional public collection ID (32 lowercase hex characters, optionally prefixed with legacy-)
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  fetch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Fetch public HTML and optional collection JSON
+        env:
+          COLLECTION_ID: ${{ inputs.collection_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$COLLECTION_ID" && ! "$COLLECTION_ID" =~ ^(legacy-)?[a-f0-9]{32}$ ]]; then
+            echo 'Invalid collection ID: expected 32 lowercase hex characters, optionally prefixed with legacy-.' >&2
+            exit 2
+          fi
+          mkdir -p public-result
+          home_status=$(curl --fail --silent --show-error --connect-timeout 10 --max-time 20 \
+            --output public-result/home.html --write-out '%{http_code}' \
+            'http://77.232.142.154/')
+          [[ "$home_status" == 200 ]] || { echo "Public homepage returned HTTP $home_status" >&2; exit 1; }
+          echo 'Public homepage is reachable over HTTP.'
+          if [[ -n "$COLLECTION_ID" ]]; then
+            collection_status=$(curl --fail --silent --show-error --connect-timeout 10 --max-time 20 \
+              --output public-result/collection.json --write-out '%{http_code}' \
+              "http://77.232.142.154/runs/$COLLECTION_ID?format=json")
+            [[ "$collection_status" == 200 ]] || { echo "Public collection returned HTTP $collection_status" >&2; exit 1; }
+            echo 'Public collection response downloaded.'
+          fi
+      - name: Save downloaded public responses
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: public-server-result
+          path: public-result/
+          if-no-files-found: warn
+          retention-days: 7

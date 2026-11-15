@@ -253,8 +253,23 @@ Local visual checks used the real saved Calendly report: desktop/mobile layout,
 criterion expansion and source links work, without horizontal mobile overflow.
 Empty analytical sections are hidden when the corresponding stages never ran.
 
-Local Python/PostgreSQL verification: **244 passed, 2 skipped** (Linux-only parser
-isolation/runtime privileges are checked in CI). No paid APIs were called in tests.
-The new Caddy profile exposes only public GET/HEAD pages on port80. Deployment and
-the new live collection are pending at this point; results will be appended after
-they actually complete. No fixture result counts as a live collection.
+Local Python/PostgreSQL verification: **244 passed, 2 skipped**. Linux CI passed
+all **246 tests**, including parser isolation and runtime privileges, plus container
+restart/restore, public HTTP routing and encrypted export. No paid APIs were called
+in tests. The official Caddy binary requires NET_BIND_SERVICE in its capability
+bounding set; the proxy otherwise retains its non-root, read-only configuration.
+
+PR #3 merged as `dfafdfc13c7416c47dae5b3d4f93f1f49885007d` after successful
+[CI](https://github.com/bcmle/test_ai_builder/actions/runs/43763558733).
+The explicit [release](https://github.com/bcmle/test_ai_builder/actions/runs/43763872706)
+successfully deployed that commit as
+`sha256:75aedfdcd6fb0f9fc1dc238d820b59ef21bc4d34d74b82aa7e142e02ac7707cf`.
+Database restore verification and encrypted off-server export passed. The existing
+Calendly assessment was published without new API calls. The public HTTP home
+returns 200 on Aeza; a Mac connection timed out, consistent with the earlier
+unresolved route issue. The manually dispatched `public-result.yml` fetches only
+public HTML/JSON from a GitHub runner to verify external access and retrieve the
+saved result; it cannot launch research or read credentials/private files.
+
+The live 20-model collection has started; final results will be appended after it
+actually completes. No fixture result counts as a live collection.
