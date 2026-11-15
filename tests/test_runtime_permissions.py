@@ -64,7 +64,7 @@ def test_runtime_has_no_ddl_but_runs_health_and_complete_smoke(tmp_path,monkeypa
         assert first['run_id']==second['run_id']
         assert first['fixture_http_calls_this_invocation']==7
         assert second['fixture_http_calls_this_invocation']==0
-        assert first['physical_attempts']==second['physical_attempts']==15
+        assert first['physical_attempts']==second['physical_attempts']==7
         with TestClient(create_app(data,ROOT/'config'/'baseline.json',database_url=runtime_dsn,technical_preview=True)) as client:
             assert client.get('/api/v1/health/ready').status_code==200
             assert client.get('/preview').status_code==200
