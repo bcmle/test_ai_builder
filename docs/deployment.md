@@ -4,6 +4,14 @@ This profile runs PostgreSQL, the web process and an explicit synthetic smoke jo
 It is not the production research worker. No provider API keys are mounted or passed.
 `/preview` is enabled only for this profile and serves one validated synthetic report;
 private artifacts are not exposed as a directory. Web binds only to server loopback.
+Web joins two networks: the private backend and a normal `preview` bridge used for
+host port publication. PostgreSQL, migrate and smoke join only the `internal: true`
+backend, so the synthetic graph has no external network route. The web bridge has
+loopback as its default publish address and the explicit port mapping remains
+`127.0.0.1:8080:8000`; it does not open the preview publicly. The web container has no
+provider keys and does not execute research. This follows Docker's [bridge port
+publication](https://docs.docker.com/engine/network/drivers/bridge/) and [separate
+frontend/backend network](https://docs.docker.com/reference/compose-file/networks/) model.
 
 ## Bootstrap once
 

@@ -39,6 +39,8 @@ services:
   web:
     <<: *app
     restart: unless-stopped
+    # A normal bridge is required for host port publication; backend jobs stay isolated.
+    networks: [internal, preview]
     environment:
       DATABASE_URL: postgresql://ai_runtime:${RUNTIME_PASSWORD}@postgres:5432/ai_builder
       AI_BUILDER_DATA: /app/data
@@ -80,6 +82,10 @@ services:
 networks:
   internal:
     internal: true
+  preview:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
 volumes:
   postgres-data:
     name: test_ai_builder_pgdata
