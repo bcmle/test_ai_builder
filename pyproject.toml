@@ -7,7 +7,7 @@ name = "ai-business-builder"
 version = "0.1.0"
 description = "Evidence-based business model research"
 requires-python = ">=3.13"
-dependencies = ["fastapi", "uvicorn", "pydantic", "httpx", "jinja2"]
+dependencies = ["fastapi", "uvicorn", "pydantic", "httpx", "jinja2", "psycopg[binary,pool]", "langgraph", "langgraph-checkpoint-postgres"]
 
 [project.optional-dependencies]
 test = ["pytest"]
@@ -19,3 +19,6 @@ where = ["src"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 
+
+[tool.setuptools.package-data]
+ai_builder = ["migrations/*.sql"]

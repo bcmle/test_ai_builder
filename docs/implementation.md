@@ -48,3 +48,41 @@ run's remaining active-time deadline and enforce lease ownership before invoking
 circuit-breaker state, schema repair, role tool loops, prompt audit and all business workflows remain
 pending. URL checks reject private initial/returned extraction URLs. Tavily's internal redirect path
 is not exposed, so this does not claim end-to-end redirect/robots enforcement or fulfill full A18.
+
+## Milestone 3a — PostgreSQL migrations and fenced LangGraph persistence
+
+Baseline v1.2 (R18, partial A56/A57). Explicit `python -m ai_builder.pg_migrate`
+uses `DATABASE_URL` with migrator credentials. Versioned packaged SQL migrations
+verify checksums under an advisory lock; LangGraph setup runs separately in its
+own schema. Web/worker startup does not run these migrations.
+
+Async psycopg pools, run lease acquire/renew, and a run-bound AsyncPostgresSaver
+adapter now keep the lease row lock and saver writes in the same transaction.
+The adapter overrides the pinned saver's `_cursor` integration point. Upgrades
+must rerun these contract tests. It does not use pipeline mode. LangSmith tracing
+is not configured or required. Tests run a real StateGraph interrupt/resume with
+new connections, reject stale checkpoint/pending writes, and verify transaction
+rollback and serialization with a competing ownership change.
+
+Run the complete suite against a **dedicated test database**:
+
+```sh
+TEST_DATABASE_URL='postgresql://localhost/ai_builder_test' python -m pytest -q
+```
+
+Without TEST_DATABASE_URL the three PostgreSQL tests are explicitly skipped.
+No production database or paid API is used. Runtime credentials must not be
+migration credentials; deployment role provisioning is still pending.
+
+This is an execution-storage foundation, NOT a completed PostgreSQL migration:
+the existing Store/provider budget adapter still uses SQLite; usage migration,
+PostgreSQL budget reservations, receipt operations, thread ownership registry,
+RunCommand delivery, the business graph and production wiring remain pending.
+The new saver is not exposed through web routes. No two schedulers are deployed.
+Linux Docker build, SQLite data import, target-server measurements and full
+A56/A57 acceptance remain unverified. The next step is PostgreSQL budget/store
+integration before any live workflow is enabled.
+
+Validation on macOS/Python 3.13 with temporary PostgreSQL 17.12: **63 tests passed**
+(including all 3 PostgreSQL tests), `pip check` passed. The test database used a
+local Unix socket only and was stopped after verification.
