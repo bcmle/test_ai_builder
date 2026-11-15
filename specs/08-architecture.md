@@ -1,6 +1,12 @@
 # 08. Архитектура, конфигурация и API
 
-Статус: APPROVED BASELINE v1.2 (пользователь, 15.11.2026).
+Статус: APPROVED BASELINE v1.3 (пользователь, 15.11.2026).
+
+## Исполняемый объём прототипа v1.3
+
+Сохраняем существующие FastAPI/Jinja/небольшой JavaScript, PostgreSQL, LangGraph и адаптеры Astra/Tavily. Один ручной последовательный серверный процесс выполняет discovery и 20 assessment scopes с общими сценарием и бюджетом $100; постоянный worker и browser write API сейчас не реализуются. Существующие lease/checkpoint/receipt и журнал расходов продолжают обеспечивать возобновление без повторения сохранённых платных этапов. Дочерние run IDs допустимы, если их расходы входят в один collection/study scope.
+
+Web читает отдельный безопасный JSON-снимок публикации по 03-data. Обязательные HTML-маршруты: `/`, `/runs/{id}`, `/runs/{id}/models/{model_id}`, `/runs/{id}/compare`, `/methodology`; неизвестный/неопубликованный ID даёт 404. Полноценный `/api/v1`, owner auth/write operations, каталог и study API ниже — контракты после прототипа, не новые требования текущего выпуска. Существующие health endpoints сохраняются. Caddy принимает публичный HTTP на 80 и проксирует только web; БД и приватные файлы остаются закрыты. Домен/HTTPS отложены для этого read-only прототипа.
 
 ## Компоненты
 
@@ -48,7 +54,7 @@ GET без revision_id выбирает published_revision_id; владелец 
 
 ## Группы конфигурации
 
-schema_version; launch_context; discovery(target=12, directions, excluded_markets); criteria[]; scoring(factors, weights, rubrics, rounding); providers(role_model_ids, API endpoint allowlist); prompts(versions); limits(time, concurrency, requests, tokens, cost); source_policy; publishing. Secret values только env/secret files, конфиг хранит имена переменных. Невалидный вес, отсутствующий model ID или отсутствующие ключи блокируют live run до расхода средств. Replay не требует ключей, но маркируется отдельно.
+schema_version; launch_context; discovery(target=20, directions, excluded_markets); criteria[]; scoring(factors, weights, rubrics, rounding); providers(role_model_ids, API endpoint allowlist); prompts(versions); limits(time, concurrency, requests, tokens, cost); source_policy; publishing. Secret values только env/secret files, конфиг хранит имена переменных. Невалидный вес, отсутствующий model ID или отсутствующие ключи блокируют live run до расхода средств. Replay не требует ключей, но маркируется отдельно.
 
 ## Дополнение v0.2: стек для выбранного объёма и Aeza
 
@@ -68,7 +74,7 @@ POST /runs фиксирует CollectionSnapshot после discovery/класс
 
 Конфигурация получает catalog.taxonomy_version, group_definitions, filter_values, variant_rules и selection.policy_version/target/one_variant_per_base. Принципы и начальные значения — в 13-catalog. Отдельная vector DB или ML-кластеризация для v1 не требуется.
 
-Дополнительные owner-операции: POST /catalog/reviews (expected_catalog_revision_id, merge/split/classify, IDs, reason, snapshot_ids) создаёт CatalogRevision; POST /runs/{id}/selection (expected_control_version, members, reason) разрешён только до фиксации, проверяет уникальность баз и релевантность вариантов; 10–15 баз — целевой размер полной подборки, меньший состав разрешён при явном подтверждении владельцем с причиной и признаком partial (A01 остаётся непройденным); POST /studies/{id}/publish и POST /catalog/publish (revision_id, expected_revision_id) публикуют явные manifests. Публикация run сама не публикует весь backlog/catalog. Новая версия catalog не меняет состав/паспорт старой подборки. Публичный GET /catalog получает только published catalog snapshot; owner может запросить конкретную draft revision.
+Дополнительные owner-операции: POST /catalog/reviews (expected_catalog_revision_id, merge/split/classify, IDs, reason, snapshot_ids) создаёт CatalogRevision; POST /runs/{id}/selection (expected_control_version, members, reason) разрешён только до фиксации, проверяет уникальность баз и релевантность вариантов; 20 баз — целевой размер полной подборки, меньший состав разрешён при явном подтверждении владельцем с причиной и признаком partial (A01 остаётся непройденным); POST /studies/{id}/publish и POST /catalog/publish (revision_id, expected_revision_id) публикуют явные manifests. Публикация run сама не публикует весь backlog/catalog. Новая версия catalog не меняет состав/паспорт старой подборки. Публичный GET /catalog получает только published catalog snapshot; owner может запросить конкретную draft revision.
 
 POST /studies/{id}/scope (expected_revision_id, scope, reason) создаёт новую StudyRevision со всеми исключениями и незавершённым покрытием; автоматического закрытия/перехода нет. POST /runs/{id}/execution-policy (expected_control_version, limits, reason) явно продлевает ресурсы без изменения аналитического hash; study-budget меняется отдельной owner-операцией с expected_revision_id. Смена лимитов не обнуляет расход.
 
