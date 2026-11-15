@@ -305,3 +305,25 @@ visual review without rerunning research on the Mac. Three-column comparison and
 source disclosures were checked using real saved data. Desktop/mobile checks and
 all 246 Linux tests passed; this is a prototype delivery with explicit research
 limitations, not acceptance of twenty investment recommendations.
+
+## Milestone 7 — domain HTTPS (v1.3.1)
+
+The prototype is available at **https://ai-builder-lab.com/**. Aeza DNS points the
+apex A record to 77.232.142.154 with TTL 300. Caddy obtains and renews certificates;
+private persistent TLS directories survive container replacement. The original
+read-only IP HTTP fallback remains available. No research or model data changed.
+
+Specifications were committed first as `824dc3c`; implementation `8376f2b` merged
+in [PR #4](https://github.com/bcmle/test_ai_builder/pull/4) as
+`3b7662f0569ae6063727b127e73dc15323845fc2`. The reviewed host bundle was installed
+before [release 43769174250](https://github.com/bcmle/test_ai_builder/actions/runs/43769174250),
+which deployed image `sha256:a712097ec25f7fabc3ab5f877898a6cd28af476a350b68fbe77622cdc1344f05`.
+
+Validation on 16 November 2026: 246 tests passed; trusted domain TLS, HTTP 308,
+private-route and POST denial, and the same certificate after Caddy recreation
+passed. A request to `/methodology?source=ceo` redirected to the identical path/query
+on HTTPS. The release completed its existing backup/restore and encrypted export.
+[External check 43769756619](https://github.com/bcmle/test_ai_builder/actions/runs/43769756619)
+fetched the homepage and saved collection over HTTPS. The live homepage also opened
+successfully in the Mac browser. P08–P10 are satisfied; the earlier research limitations
+and empty final ranking remain unchanged.
