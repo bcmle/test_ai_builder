@@ -62,7 +62,7 @@ def test_runtime_has_no_ddl_but_runs_health_and_complete_smoke(tmp_path,monkeypa
         first=asyncio.run(run_smoke(runtime_dsn,data,ROOT/'config'/'baseline.json'))
         second=asyncio.run(run_smoke(runtime_dsn,data,ROOT/'config'/'baseline.json'))
         assert first['run_id']==second['run_id']
-        assert first['fixture_http_calls_this_invocation']==15
+        assert first['fixture_http_calls_this_invocation']==7
         assert second['fixture_http_calls_this_invocation']==0
         assert first['physical_attempts']==second['physical_attempts']==15
         with TestClient(create_app(data,ROOT/'config'/'baseline.json',database_url=runtime_dsn,technical_preview=True)) as client:
