@@ -1,6 +1,6 @@
 # 08. Архитектура, конфигурация и API
 
-Статус: DRAFT v0.3. Предложение: один сервер, модульное приложение, отдельный worker. Не утверждённый стек.
+Статус: DRAFT v0.4. Предложение: один сервер, модульное приложение, отдельный worker. Не утверждённый стек.
 
 ## Компоненты
 
@@ -17,9 +17,9 @@
 
 ## Поток и транзакции
 
-Web валидирует config и создаёт Run + pending stages в одной транзакции, возвращает 202. Worker короткой транзакцией захватывает lease, освобождает транзакцию на время внешнего вызова, затем атомарно сохраняет результат/следующую стадию. DB-lock не держится во время сетевых операций. Уникальность stage по run/model/stage/input_hash/config_hash/prompt_version предотвращает дублирование результата. Повторный платный запрос после сетевого таймаута возможен: exactly-once billing не обещаем; такой расход отмечается unknown/estimated.
+Web валидирует config и создаёт Run + pending stages в одной транзакции, возвращает 202. Worker захватывает lease_token/lease_expires_at короткой транзакцией, освобождает DB-lock на время сети. Запись результата и следующей стадии атомарна и принимает только актуальный lease_token; устаревший ответ сохраняется в аудите без изменения результата. Уникальность stage по run/assessment_scope/stage/input_hash/analytical_config_hash/prompt_version предотвращает дублирование. Бюджет резервируется транзакционно по run+study до каждого физического запроса согласно 10-operations. Exactly-once billing не обещаем: при таймауте резерв unknown остаётся занятым.
 
-Resume переиспользует succeeded stages при совпадении ключа. Изменение входов/промпта/критериев делает кэш недействительным для зависимых этапов и создаёт новую ревизию/новый run. Ручное разрешение фактов создаёт новую derived revision; публикация атомарно переключает указатель на полностью валидированную ревизию.
+Resume переиспользует succeeded stages при совпадении ключа. Аналитические изменения инвалидируют зависимые результаты и создают AnalysisRevision/new run по 03/04. Политика исполнения (время/бюджет) версионируется отдельно и не меняет аналитические входы. active_elapsed_ms/active_interval_started_at не сбрасываются при resume. Публикация указывает на sealed manifest AnalysisRevision; partial публикация сохраняет неполные статусы. Смена указателя атомарна.
 
 ## API-контракты
 
@@ -28,21 +28,23 @@ Resume переиспользует succeeded stages при совпадении
 | Method/path | Вход | Выход/поведение |
 |---|---|---|
 | GET /runs | cursor, limit | Только опубликованные run summaries для гостя; владельцу также черновики |
-| GET /runs/{id} | — | Статус, счётчики, scenario, published revision |
-| GET /runs/{id}/models | status, cursor, limit | Карточки состояния и краткие оценки |
-| GET /runs/{id}/ranking | — | Возрастающий final ranking; provisional отдельно |
-| GET /runs/{id}/models/{model_id} | — | Карточка с паспортами и разрешёнными источниками |
+| GET /runs/{id} | revision_id nullable, view=published/draft | Статус, счётчики, scenario, control_version, revision_id |
+| GET /runs/{id}/models | revision_id, query, group, buyer, revenue, market, status, sort, cursor, limit | Фильтрация всего снимка до пагинации; sort=score_asc/score_desc/name, не меняет места |
+| GET /runs/{id}/ranking | revision_id | Возрастающий final ranking; provisional отдельно |
+| GET /runs/{id}/models/{model_id} | revision_id | Карточка из того же manifest с паспортами и разрешёнными источниками |
 | GET /runs/{id}/audit | cursor, limit | Публичная очищенная проекция журнала; private payload только владельцу |
 | GET /runs/{id}/export | format=json/md | Опубликованный безопасный экспорт |
 | POST /runs | config_version, mode, source_run_id nullable; Idempotency-Key | 202 run_id; тот же ключ+тело возвращает прежний run, другое тело с тем же ключом — 409 |
-| POST /runs/{id}/resume | expected_revision | 202; только незавершённые стадии; повтор не создаёт копии |
-| POST /runs/{id}/pause | expected_revision | Не запускать новые стадии, текущий вызов завершить/таймаутить и сохранить |
-| POST /reviews | target, expected_revision, decision, reason, evidence_ids | Новая ManualReview и пересчёт зависимостей; 409 при устаревшей ревизии |
-| POST /runs/{id}/publish | expected_revision | Проверка public projection и атомарная публикация выбранной ревизии |
+| POST /runs/{id}/resume | expected_control_version | 202; незавершённые стадии, без сброса лимитов; повтор не создаёт копии |
+| POST /runs/{id}/pause | expected_control_version | Не запускать новые стадии, текущий вызов завершить/таймаутить и сохранить |
+| POST /reviews | target, expected_revision_id, decision, reason, evidence_ids | Новая ManualReview/AnalysisRevision, инвалидирование и очередь по 04; 409 при конфликте |
+| POST /runs/{id}/publish | revision_id, expected_control_version | Проверка public projection/manifest и атомарная публикация sealed revision |
 | GET /health/live | — | Процесс отвечает |
 | GET /health/ready | — | БД/том доступны, конфиг валиден; не делает платных запросов |
 
 Владелец входит через POST /session (пароль), выходит DELETE /session; неверный пароль — одинаковая безопасная ошибка. Секреты провайдеров не принимаются через public config API. Конфиг в v1 редактируется владельцем в versioned файлах, UI показывает снимок; web-редактор промптов и секретов не входит в v1.
+
+GET без revision_id выбирает published_revision_id; владелец может запросить view=draft и получить draft revision ID. Последующие переходы, сравнение, аудит и экспорт передают этот ID, чтобы не смешивать снимки. Гость не читает неопубликованные ревизии (404), включая прямые ссылки; partial опубликованная ревизия допустима. control_version — версия изменяемого состояния Run, expected_revision_id — конкретный неизменяемый/текущий черновой snapshot цели; эти понятия не взаимозаменяемы.
 
 ## Группы конфигурации
 
@@ -65,3 +67,7 @@ GET /catalog: опубликованные базовые модели с cursor
 POST /runs фиксирует CollectionSnapshot после discovery/классификации и отбора; до фиксации stage=selecting, выбранные участники доступны владельцу. Ручная корректировка варианта/неоднозначного дубля фиксируется с причиной до запуска фильтров; после фиксации изменение состава создаёт новый run. Маршруты карточек по model_id в run однозначны, потому что в подборке один вариант каждой базы. В API результатов добавляется assessment_scope_id/variant_id. Ключи стадий и кэша из раздела транзакций включают scope.
 
 Конфигурация получает catalog.taxonomy_version, group_definitions, filter_values, variant_rules и selection.policy_version/target/one_variant_per_base. Принципы и начальные значения — в 13-catalog. Отдельная vector DB или ML-кластеризация для v1 не требуется.
+
+Дополнительные owner-операции: POST /catalog/reviews (expected_catalog_revision_id, merge/split/classify, IDs, reason, snapshot_ids) создаёт CatalogRevision; POST /runs/{id}/selection (expected_control_version, members, reason) разрешён только до фиксации, проверяет уникальность баз и релевантность вариантов; 10–15 баз — целевой размер полной подборки, меньший состав разрешён при явном подтверждении владельцем с причиной и признаком partial (A01 остаётся непройденным); POST /studies/{id}/publish и POST /catalog/publish (revision_id, expected_revision_id) публикуют явные manifests. Публикация run сама не публикует весь backlog/catalog. Новая версия catalog не меняет состав/паспорт старой подборки. Публичный GET /catalog получает только published catalog snapshot; owner может запросить конкретную draft revision.
+
+POST /studies/{id}/scope (expected_revision_id, scope, reason) создаёт новую StudyRevision со всеми исключениями и незавершённым покрытием; автоматического закрытия/перехода нет. POST /runs/{id}/execution-policy (expected_control_version, limits, reason) явно продлевает ресурсы без изменения аналитического hash; study-budget меняется отдельной owner-операцией с expected_revision_id. Смена лимитов не обнуляет расход.
