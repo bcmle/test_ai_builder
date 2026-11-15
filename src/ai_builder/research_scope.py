@@ -336,8 +336,8 @@ async def run_research(pool, artifacts: ArtifactStore, *, openai_key: str = '', 
                                                     resume=bool(checkpoint.created_at))
                 async with ledger.locked(run_id, fenced=True) as (conn, _, __):
                     snapshots = await (await conn.execute(
-                        'SELECT id,metadata FROM app.source_snapshots WHERE run_id=%s AND id=ANY(%s::text[])',
-                        (run_id, [doc.snapshot_id for doc in prepared.scope.documents]))).fetchall()
+                        'SELECT id,metadata FROM app.source_snapshots WHERE id=ANY(%s::text[])',
+                        ([doc.snapshot_id for doc in prepared.scope.documents],))).fetchall()
                 allowed_metadata = {'title', 'publisher', 'published_at', 'fetched_at', 'parser_version', 'extraction_method'}
                 state = {**state, 'source_gaps': [g.model_dump(mode='json') for g in prepared.gaps],
                          'source_metadata': {row['id']: {key: value for key, value in row['metadata'].items()

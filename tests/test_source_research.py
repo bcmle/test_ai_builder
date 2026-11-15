@@ -8,11 +8,13 @@ import os
 import httpx
 import pytest
 from pydantic import ValidationError
+from psycopg.types.json import Jsonb
 
 from ai_builder.evidence import ArtifactStore
 from ai_builder.fetch_transport import FetchError, SourceResponse
 from ai_builder.pg_execution import execution_pool
 from ai_builder.pg_migrate import migrate
+from ai_builder.pg_ledger import digest
 from ai_builder.providers import MeteredHTTP, TavilyAdapter
 from ai_builder.source_documents import ParsedDocument
 from ai_builder.source_research import (ScopeSeed, SearchQueryPlan, SourceResearchPlan,
@@ -104,6 +106,7 @@ def test_v2_plan_bounds_primary_urls_and_legacy_serialization():
     expected = {name: getattr(legacy, name) for name in (
         'schema_version', 'seed', 'queries', 'max_new_reads', 'acquisition_limits', 'parser_limits')}
     assert 'priority_primary_urls' not in legacy.model_dump(mode='json')
+    assert 'derived_from_run_id' not in legacy.model_dump(mode='json')
     assert set(legacy.model_dump()) == set(expected)
     assert SourceResearchPlan.model_validate_json(legacy.model_dump_json()).model_dump_json() == legacy.model_dump_json()
     v2 = SourceResearchPlan.model_validate({**legacy.model_dump(), 'schema_version': '2',
@@ -115,6 +118,67 @@ def test_v2_plan_bounds_primary_urls_and_legacy_serialization():
                     {'priority_primary_urls': ['file:///private/secret']}, {'schema_version': '1'}):
         with pytest.raises(ValidationError):
             SourceResearchPlan.model_validate({**v2.model_dump(), **invalid})
+    derived = SourceResearchPlan.model_validate({**v2.model_dump(), 'queries': (),
+        'derived_from_run_id': 'parent-run'})
+    assert derived.queries == () and derived.derived_from_run_id == 'parent-run'
+    for invalid in ({'queries': [SearchQueryPlan(query='new paid query')]},
+                    {'priority_primary_urls': []}, {'derived_from_run_id': ''}, {'schema_version': '1'}):
+        with pytest.raises(ValidationError):
+            SourceResearchPlan.model_validate({**derived.model_dump(), **invalid})
+
+
+@database
+def test_source_size_revision_reuses_full_primary_snapshots_without_calls(config, tmp_path):
+    async def check():
+        await migrate(DSN)
+        async with execution_pool(DSN) as pool:
+            parent, study, _ = await setup(pool, config)
+            artifacts = ArtifactStore(tmp_path)
+            original = SourceResearchPlan.model_validate({**plan().model_dump(), 'schema_version': '2',
+                'priority_primary_urls': ['https://example.com/a', 'https://example.com/b']})
+            harness = Harness(parent, artifacts, {'invoice product': [{'url': 'https://example.com/supplementary'}]})
+            full = await harness.prepare(original)
+            assert len(full.scope.documents) == 3
+            saved_context = {'plan': original.model_dump(mode='json'),
+                             'openai_pricing': pricing().model_copy(update={'input_context_limit': 1}).model_dump(mode='json')}
+            async with pool.connection() as conn:
+                await conn.execute('INSERT INTO app.research_contexts(run_id,context_hash,context) VALUES (%s,%s,%s)',
+                                   (parent.run_id, digest(saved_context), Jsonb(saved_context)))
+                await conn.execute("UPDATE app.runs SET status='paused' WHERE id=%s", (parent.run_id,))
+            child, _, _ = await setup(pool, config, study=study)
+            seed = original.seed.model_copy(update={'scope_id': uid(), 'variant_id': uid()})
+            narrowed = SourceResearchPlan.model_validate({**original.model_dump(), 'seed': seed,
+                'queries': (), 'derived_from_run_id': parent.run_id,
+                'priority_primary_urls': ['https://example.com/a']})
+
+            def forbidden(*args, **kwargs):
+                raise AssertionError('Retained sources must not repeat search, fetch or parse')
+
+            result = await prepare_scope(child, narrowed, forbidden, forbidden, artifacts, parser=forbidden)
+            replay = await prepare_scope(child, narrowed, forbidden, forbidden, artifacts, parser=forbidden)
+            assert result == replay and result.scope.documents == [full.scope.documents[0]]
+            assert result.scope.scope_id != full.scope.scope_id
+            assert result.scope.documents[0].text == BODY.decode()  # Entire original text, not an excerpt.
+            usage = await child.summary(child.run_id)
+            assert usage['calculated_micro'] == usage['controlled_document_attempts'] == 0
+            assert not usage['requests']
+            async with pool.connection() as conn:
+                saved_parent = await (await conn.execute('SELECT packet FROM app.source_research WHERE run_id=%s',
+                                                         (parent.run_id,))).fetchone()
+                event = await (await conn.execute("SELECT payload FROM app.events WHERE run_id=%s AND kind='source_scope_derived'",
+                                                  (child.run_id,))).fetchone()
+            assert saved_parent['packet'] == full.scope.model_dump(mode='json')
+            assert event['payload']['retained_full_documents']
+            assert len(event['payload']['excluded_snapshot_ids']) == 2
+            # A search result cannot be promoted to a primary retained source.
+            rejected, _, _ = await setup(pool, config, study=study)
+            other = SourceResearchPlan.model_validate({**narrowed.model_dump(),
+                'seed': seed.model_copy(update={'scope_id': uid(), 'variant_id': uid()}),
+                'priority_primary_urls': ['https://example.com/supplementary']})
+            with pytest.raises(Conflict, match='successfully acquired primary'):
+                await prepare_scope(rejected, other, forbidden, forbidden, artifacts, parser=forbidden)
+            await harness.close()
+    asyncio.run(check())
 
 
 @database

@@ -106,6 +106,17 @@ collection and its ranking stay separate. `--retry-paused` explicitly resumes a
 paused follow-up only when its existing limits allow it and no uncertain external
 operation or active owner remains. It does not increase any budget.
 
+If the saved full source packet exceeds the analytical input bound before any
+LLM request, `--refine-sources` creates a linked revision using its successfully
+downloaded priority primary documents. Their full text, original dates and
+snapshot identifiers are retained; supplementary documents stay in the earlier
+run. The selection and exclusions are recorded. No Tavily request or document
+download is repeated. Subsequent invocations resume the latest revision.
+
+```sh
+python -m ai_builder.focused_research --parent-collection COLLECTION_ID --model-id MODEL_ID --refine-sources
+```
+
 Role outputs undergo schema and semantic validation before acceptance. An invalid
 output receives at most two metered corrections; every saved raw response and
 correction is replayable. Refusals, authentication/quota errors and unknown billing

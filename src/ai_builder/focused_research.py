@@ -16,7 +16,7 @@ from .collection import CollectionContext, _read_collection, _resume_child, _saf
 from .config import load_config
 from .evidence import ArtifactStore
 from .pg_execution import acquire_lease, execution_pool, renew_lease
-from .pg_ledger import PostgresLedger
+from .pg_ledger import PostgresLedger, digest
 from .public import public_model, publish_featured_followup, publish_snapshot
 from .research_scope import ResearchContext, create_research_run, run_research
 from .source_research import SourceResearchPlan
@@ -26,6 +26,7 @@ from .store import Conflict, uid
 async def run_focused(pool, artifacts, *, parent_collection_id, model_id,
                       openai_key='', tavily_key='', data_dir=None,
                       config_dir='config', retry_paused=False,
+                      refine_sources=False,
                       provider_client=None, fetch_document=None, parser=None):
     """Create once, then resume from stored context; no fresh study allocation."""
     async with pool.connection() as conn:
@@ -57,19 +58,48 @@ async def run_focused(pool, artifacts, *, parent_collection_id, model_id,
                 WHERE r.study_id=%s AND rc.context->>'parent_collection_id'=%s
                 AND rc.context->>'parent_run_id'=%s ORDER BY r.created_at''',
                 (collection['study_id'], parent_collection_id, item['run_id']))).fetchall()
-        if len(existing) > 1:
-            raise Conflict('Multiple follow-ups exist; an explicit revision selection is required')
         if existing:
-            run_id = existing[0]['id']
-            context = ResearchContext.model_validate(existing[0]['context'])
+            latest = existing[-1]
+            run_id = latest['id']
+            context = ResearchContext.model_validate(latest['context'])
             from .config import Configuration
-            config = Configuration.model_validate(existing[0]['config_json'])
-            if existing[0]['status'] == 'paused':
+            config = Configuration.model_validate(latest['config_json'])
+            if refine_sources and not context.plan.derived_from_run_id:
+                if latest['status'] != 'paused':
+                    raise Conflict('Source refinement requires a paused oversized analysis')
+                async with parent_ledger.locked(coordinator, fenced=True) as (conn, _, __):
+                    source = await (await conn.execute('SELECT * FROM app.source_research WHERE run_id=%s', (run_id,))).fetchone()
+                    usage = await (await conn.execute("SELECT count(*) AS n FROM app.usage WHERE run_id=%s AND provider='openai'", (run_id,))).fetchone()
+                    selected = await (await conn.execute('''SELECT sr.url,sr.snapshot_id FROM app.source_queries q
+                        JOIN app.source_results sr ON sr.query_id=q.id
+                        JOIN app.source_snapshots ss ON ss.id=sr.snapshot_id
+                        WHERE q.run_id=%s AND q.query->>'kind'='primary_urls' AND ss.state='succeeded'
+                        ORDER BY sr.result_rank''', (run_id,))).fetchall()
+                if (not source or source['state'] != 'frozen' or usage['n']
+                        or digest({'scope': source['packet'], 'gaps': source['gaps']}) != source['packet_hash']
+                        or len(json.dumps(source['packet'], ensure_ascii=False).encode()) < context.openai_pricing.input_context_limit):
+                    raise Conflict('Refinement is limited to oversized frozen inputs before any model request')
+                retained = {row['snapshot_id'] for row in selected}
+                documents = [doc for doc in source['packet']['documents'] if doc['snapshot_id'] in retained]
+                packet = {**source['packet'], 'documents': documents}
+                if not documents or len(json.dumps(packet, ensure_ascii=False).encode()) + 32768 > context.openai_pricing.input_context_limit:
+                    raise Conflict('Primary documents still exceed the bounded analytical context; no new run created')
+                previous_run = run_id
+                plan = context.plan.model_copy(update={
+                    'derived_from_run_id': previous_run, 'queries': (),
+                    'priority_primary_urls': tuple(row['url'] for row in selected),
+                    'seed': context.plan.seed.model_copy(update={'scope_id': uid(), 'variant_id': uid()})})
+                context = ResearchContext.model_validate({**context.model_dump(mode='json'), 'plan': plan.model_dump(mode='json')})
+                run_id = await create_research_run(pool, config, context, study_id=collection['study_id'])
+                print(f'Primary-source revision: {previous_run} -> {run_id}; retained={len(documents)}; no search or fetch repeated', flush=True)
+            elif latest['status'] == 'paused':
                 if not retry_paused:
                     raise Conflict('Follow-up is paused; use --retry-paused after inspecting the audit')
                 await _resume_child(parent_ledger, parent_collection_id, run_id,
                                     reason='Owner invoked focused --retry-paused; original limits and inputs retained')
         else:
+            if refine_sources:
+                raise Conflict('Source refinement requires an existing paused oversized analysis')
             if not openai_key or not tavily_key:
                 raise ValueError('Both provider keys are required for a new follow-up')
             folder = Path(config_dir)
@@ -97,6 +127,9 @@ async def run_focused(pool, artifacts, *, parent_collection_id, model_id,
         if any('zendesk.com/' in doc.url for doc in result.prepared.scope.documents):
             metadata['comparable'] = 'Zendesk (documented source); Intercom (original discovery lead)'
         model = public_model(result, metadata, config)
+        if context.plan.derived_from_run_id:
+            model['limitations'].append('This revision analyses the previously acquired primary-source documents. '
+                'Supplementary documents remain preserved in the earlier research record and are not included in this assessment.')
         async with parent_ledger.locked(coordinator, fenced=True) as (conn, _, __):
             row = await (await conn.execute('SELECT created_at FROM app.runs WHERE id=%s', (run_id,))).fetchone()
             now = datetime.now(timezone.utc).isoformat()
@@ -142,7 +175,7 @@ async def run(args):
         return await run_focused(pool, ArtifactStore(data / 'evidence'),
             parent_collection_id=args.parent_collection, model_id=args.model_id,
             openai_key=os.environ.get('OPENAI_API_KEY', ''), tavily_key=os.environ.get('TAVILY_API_KEY', ''),
-            data_dir=data, retry_paused=args.retry_paused)
+            data_dir=data, retry_paused=args.retry_paused, refine_sources=args.refine_sources)
 
 
 def main():
@@ -150,6 +183,7 @@ def main():
     cli.add_argument('--parent-collection', required=True)
     cli.add_argument('--model-id', required=True)
     cli.add_argument('--retry-paused', action='store_true')
+    cli.add_argument('--refine-sources', action='store_true', help='Create a primary-source revision of an oversized paused input without refetching')
     try:
         asyncio.run(run(cli.parse_args()))
     except Exception as error:

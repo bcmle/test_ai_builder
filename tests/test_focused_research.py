@@ -12,6 +12,7 @@ from ai_builder.focused_research import run_focused
 from ai_builder.pg_execution import execution_pool
 from ai_builder.pg_migrate import migrate
 from ai_builder.public import load_featured_followup, load_snapshot
+from ai_builder.store import Conflict
 from test_collection import Providers, context
 
 DSN = os.getenv('TEST_DATABASE_URL')
@@ -29,6 +30,9 @@ def test_focused_run_shares_parent_budget_and_replays_without_replacing_twenty(c
                     tavily_key='fixture', provider_client=client, data_dir=tmp_path)
             before = load_snapshot(tmp_path)
             model_id = before['models'][0]['id']
+            with pytest.raises(Conflict, match='existing paused'):
+                await run_focused(pool, artifacts, parent_collection_id=parent.collection_id, model_id=model_id,
+                                  data_dir=tmp_path, refine_sources=True)
             async with pool.connection() as conn:
                 member = await (await conn.execute('SELECT run_id FROM app.collection_items WHERE collection_id=%s AND model_id=%s',
                                                    (parent.collection_id, model_id))).fetchone()
@@ -74,6 +78,9 @@ def test_focused_run_shares_parent_budget_and_replays_without_replacing_twenty(c
                     data_dir=tmp_path, config_dir=tmp_path / 'not-needed-on-replay', provider_client=client)
             assert replay.run_id == focused.run_id and replay.replay
             assert replay.usage == focused.usage and load_snapshot(tmp_path) == before
+            with pytest.raises(Conflict, match='paused oversized'):
+                await run_focused(pool, artifacts, parent_collection_id=parent.collection_id, model_id=model_id,
+                                  data_dir=tmp_path, refine_sources=True)
             # A fully used search quota must not prevent resuming later stages
             # once the immutable source packet has already been saved.
             async with pool.connection() as conn:
