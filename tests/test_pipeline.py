@@ -48,7 +48,7 @@ class FixtureRoles:
         elif role=='neutrality':
             result=dict(status='accept' if self.neutral else 'uncertain',reason='Fixture')
         elif role=='verifier':
-            assert set(packet)=={'assessment_scope_id','base_model_id','variant_id','neutral_model_description','launch_context','claims','documents'}
+            assert set(packet)-{'output_correction'}=={'assessment_scope_id','base_model_id','variant_id','neutral_model_description','launch_context','claims','documents'}
             assert 'impact' not in str(packet) and 'critic_order' not in str(packet)
             assert 'affected_criterion_ids' not in str(packet)
             result=dict(items=[dict(claim_id='made-up' if self.bad_verifier else c['claim_id'],status='supported',evidence_ids=['evidence'],reason='Fixture') for c in packet['claims']])

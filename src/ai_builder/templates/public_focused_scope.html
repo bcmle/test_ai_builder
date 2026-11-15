@@ -1,0 +1,20 @@
+{% if snapshot.parent_collection_id %}
+<section class="focused-scope" aria-labelledby="focused-scope-title">
+  <span class="eyebrow">Focused analysis · {{ snapshot.published_at|date }}</span>
+  <h2 id="focused-scope-title">One model. A specific launch.</h2>
+  <p class="muted">This follow-up explores a narrower scenario. Its score is separate from the original collection.</p>
+  <a class="understated-link" href="/runs/{{ snapshot.parent_collection_id }}/models/{{ snapshot.parent_model_id }}">See the original assessment ↗</a>
+  <div class="scenario-strip">
+    <div><span>Jurisdiction</span><strong>{{ snapshot.scenario.jurisdiction or 'Not confirmed' }}</strong></div>
+    <div><span>Team</span><strong>{{ snapshot.scenario.team_size }} people</strong></div>
+    <div><span>Business test budget · excluding salaries</span><strong>{{ snapshot.scenario.business_budget_usd|dollars }}</strong></div>
+    <div><span>First-payment horizon</span><strong>{{ snapshot.scenario.days }} days</strong></div>
+  </div>
+  {% if snapshot.launch_conditions %}
+  <details class="scope-conditions" open><summary>Conditions of this proposed launch</summary>
+    <ul>{% for condition in snapshot.launch_conditions %}<li>{% for paragraph in condition.split('\n') %}{% if paragraph %}<p>{{ paragraph }}</p>{% endif %}{% endfor %}</li>{% endfor %}</ul>
+    <p class="small muted">These define the proposed launch. They do not confirm that business registration, tax, privacy, security or payment-provider requirements have been completed.</p>
+  </details>
+  {% endif %}
+</section>
+{% endif %}

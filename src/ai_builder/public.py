@@ -99,6 +99,11 @@ class ClaimPassport(PublicContract):
     source_refs: list[SourceRef] = Field(default_factory=list)
 
 
+class DesignBasis(PublicContract):
+    kind: Literal['proposed_design']
+    excerpt: str = Field(max_length=320)
+
+
 class Criterion(PublicContract):
     id: str
     name: str
@@ -108,6 +113,7 @@ class Criterion(PublicContract):
     confidence: Literal['low', 'medium', 'high'] | None = None
     confidence_reason: str | None = None
     method: Literal['model_judgment'] = 'model_judgment'
+    design_basis: list[DesignBasis] = Field(default_factory=list)
 
 
 class Bounds(PublicContract):
@@ -208,9 +214,21 @@ class PublicSnapshot(PublicContract):
     completed_count: int = Field(default=0, ge=0, le=20)
     scenario: Scenario
     models: list[Model] = Field(max_length=20)
+    parent_collection_id: str | None = Field(default=None, pattern=IDENTIFIER)
+    parent_run_id: str | None = Field(default=None, pattern=IDENTIFIER)
+    parent_model_id: str | None = Field(default=None, pattern=IDENTIFIER)
+    launch_conditions: list[str] = Field(default_factory=list, max_length=30)
 
     @model_validator(mode='after')
     def counts(self):
+        if self.run_id in {'latest', 'featured'}:
+            raise ValueError('Reserved public snapshot identity')
+        parents = (self.parent_collection_id, self.parent_run_id, self.parent_model_id)
+        if any(value is not None for value in parents):
+            if not all(parents) or self.expected_count != 1 or len(self.models) != 1:
+                raise ValueError('A focused analysis requires one model and complete parent references')
+            if self.parent_collection_id == self.run_id:
+                raise ValueError('A focused analysis cannot be its own parent')
         if len({m.id for m in self.models}) != len(self.models):
             raise ValueError('Duplicate public model identity')
         if len(self.models) > self.expected_count:
@@ -270,6 +288,8 @@ def public_model(result, metadata: dict, config) -> dict:
     criteria = [dict(id=criterion['criterion_id'], name=CRITERIA.get(criterion['criterion_id'], criterion['criterion_id']),
                      result=criterion.get('result') or criterion.get('state', 'pending'), reason=criterion['reason'],
                      source_ids=[evidence_map[eid] for eid in criterion.get('evidence_ids', []) if eid in evidence_map],
+                     design_basis=[dict(kind=basis['kind'], excerpt=_clip(basis['excerpt']))
+                                   for basis in criterion.get('design_basis', [])],
                      confidence=criterion.get('confidence'), confidence_reason=criterion.get('confidence_reason'))
                 for criterion in state.get('criteria', [])]
     limitations = [*critique.get('limitations', []), *factors.get('limitations', [])]
@@ -316,8 +336,10 @@ def _atomic_json(path: Path, value):
             temporary.unlink(missing_ok=True)
 
 
-def publish_snapshot(data_dir, snapshot: dict) -> Path:
+def publish_snapshot(data_dir, snapshot: dict, *, set_latest: bool = True) -> Path:
     public = PublicSnapshot.model_validate(snapshot)
+    if public.parent_collection_id and set_latest:
+        raise ValueError('A focused analysis cannot replace the main collection')
     for model in public.models:
         model.rank = None
     for goal in GOALS:
@@ -330,8 +352,19 @@ def publish_snapshot(data_dir, snapshot: dict) -> Path:
             model.rank = place
             previous = model.score.value
     path = Path(data_dir) / 'public' / f'{public.run_id}.json'
+    if path.exists():
+        previous = load_snapshot(data_dir, public.run_id)
+        if previous is None:
+            raise ValueError('Cannot overwrite an invalid public snapshot')
+        history = path.parent / 'history' / public.run_id / f"{previous['revision_id']}.json"
+        if history.exists():
+            if history.is_symlink() or json.loads(history.read_text()) != previous:
+                raise ValueError('Public revision history cannot be replaced')
+        else:
+            _atomic_json(history, previous)
     _atomic_json(path, public.model_dump(mode='json'))
-    _atomic_json(path.parent / 'latest.json', {'run_id': public.run_id})
+    if set_latest:
+        _atomic_json(path.parent / 'latest.json', {'run_id': public.run_id})
     return path
 
 
@@ -340,7 +373,7 @@ def load_snapshot(data_dir, run_id=None) -> dict | None:
     try:
         if run_id is None:
             run_id = json.loads((directory / 'latest.json').read_text())['run_id']
-        if not isinstance(run_id, str) or not re.fullmatch(IDENTIFIER, run_id) or run_id == 'latest':
+        if not isinstance(run_id, str) or not re.fullmatch(IDENTIFIER, run_id) or run_id in {'latest', 'featured'}:
             return None
         path = directory / f'{run_id}.json'
         if path.is_symlink() or path.stat().st_size > 10_000_000:
@@ -349,5 +382,40 @@ def load_snapshot(data_dir, run_id=None) -> dict | None:
         if snapshot.run_id != run_id:
             return None
         return snapshot.model_dump(mode='json')
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _valid_followup(data_dir, run_id) -> dict | None:
+    snapshot = load_snapshot(data_dir, run_id)
+    if not snapshot or not snapshot['parent_collection_id']:
+        return None
+    parent = load_snapshot(data_dir, snapshot['parent_collection_id'])
+    if not parent or parent['parent_collection_id']:
+        return None
+    parent_model = next((model for model in parent['models'] if model['id'] == snapshot['parent_model_id']), None)
+    if not parent_model or parent_model['base_model_id'] != snapshot['models'][0]['base_model_id']:
+        return None
+    return snapshot
+
+
+def publish_featured_followup(data_dir, run_id: str) -> Path:
+    """Point to a saved, scoped analysis without replacing the main collection."""
+    if _valid_followup(data_dir, run_id) is None:
+        raise ValueError('Focused analysis must reference a saved parent model with the same base identity')
+    path = Path(data_dir) / 'public' / 'featured.json'
+    _atomic_json(path, {'run_id': run_id})
+    return path
+
+
+def load_featured_followup(data_dir) -> dict | None:
+    path = Path(data_dir) / 'public' / 'featured.json'
+    try:
+        if path.is_symlink() or path.stat().st_size > 1024:
+            return None
+        pointer = json.loads(path.read_text())
+        if set(pointer) != {'run_id'}:
+            return None
+        return _valid_followup(data_dir, pointer['run_id'])
     except (OSError, ValueError, KeyError, TypeError):
         return None

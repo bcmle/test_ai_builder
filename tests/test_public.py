@@ -6,7 +6,8 @@ from fastapi.testclient import TestClient
 import pytest
 
 from ai_builder.api import create_app
-from ai_builder.public import Model, load_snapshot, public_model, publish_snapshot
+from ai_builder.public import (Model, load_featured_followup, load_snapshot, public_model,
+                               publish_featured_followup, publish_snapshot)
 from ai_builder.pipeline import Document, ScopePacket
 
 
@@ -168,3 +169,101 @@ def test_empty_site_is_useful_without_database_or_published_research(tmp_path):
         assert 'The first collection is on its way.' in client.get('/').text
         assert client.get('/methodology').status_code == 200
         assert client.get('/runs/missing').status_code == 404
+
+
+def focused_snapshot(config):
+    value = snapshot([public_model(result_fixture(), metadata('focused-model'), config)])
+    value.update(run_id='focused-run', revision_id='focused-revision', expected_count=1, status='completed',
+                 title='A focused helpdesk launch', parent_collection_id='collection-a',
+                 parent_run_id='original-child-run', parent_model_id='model-a',
+                 launch_conditions=['B2B email support only; no custody of customer funds.'])
+    value['scenario']['jurisdiction'] = 'Texas / Austin'
+    return value
+
+
+def test_focused_publication_preserves_latest_and_checks_parent_membership(config, tmp_path):
+    publish_snapshot(tmp_path, snapshot([public_model(result_fixture(), metadata(), config)]))
+    focused = focused_snapshot(config)
+    with pytest.raises(ValueError, match='main collection'):
+        publish_snapshot(tmp_path, focused)
+    publish_snapshot(tmp_path, focused, set_latest=False)
+    publish_featured_followup(tmp_path, 'focused-run')
+    assert load_snapshot(tmp_path)['run_id'] == 'collection-a'
+    assert load_featured_followup(tmp_path)['run_id'] == 'focused-run'
+    for changed in ({'parent_model_id': 'not-a-member'}, {'parent_collection_id': 'missing-parent'}):
+        invalid = {**focused, **changed, 'run_id': 'invalid-followup'}
+        publish_snapshot(tmp_path, invalid, set_latest=False)
+        with pytest.raises(ValueError, match='same base identity'):
+            publish_featured_followup(tmp_path, 'invalid-followup')
+    mismatched = deepcopy(focused)
+    mismatched['run_id'] = 'another-base'
+    mismatched['models'][0]['base_model_id'] = 'different-base'
+    publish_snapshot(tmp_path, mismatched, set_latest=False)
+    with pytest.raises(ValueError, match='same base identity'):
+        publish_featured_followup(tmp_path, 'another-base')
+    assert load_featured_followup(tmp_path)['run_id'] == 'focused-run'
+
+
+def test_publication_retains_previous_revision_before_replacement(config, tmp_path):
+    value = snapshot([public_model(result_fixture(), metadata(), config)])
+    publish_snapshot(tmp_path, value)
+    original = load_snapshot(tmp_path)
+    value.update(revision_id='revision-b', title='Updated research')
+    publish_snapshot(tmp_path, value)
+    history = tmp_path / 'public' / 'history' / 'collection-a' / 'revision-a.json'
+    assert json.loads(history.read_text()) == original
+    assert load_snapshot(tmp_path)['revision_id'] == 'revision-b'
+    path = tmp_path / 'public' / 'collection-a.json'
+    path.write_text('{invalid')
+    with pytest.raises(ValueError, match='invalid public snapshot'):
+        publish_snapshot(tmp_path, value)
+    assert path.read_text() == '{invalid'
+    assert json.loads(history.read_text()) == original
+
+
+def test_featured_pointer_cannot_read_paths_or_unlinked_snapshots(config, tmp_path):
+    publish_snapshot(tmp_path, snapshot([public_model(result_fixture(), metadata(), config)]))
+    pointer = tmp_path / 'public' / 'featured.json'
+    for value in ({'run_id': '../../private'}, {'run_id': 'collection-a'}, {'path': 'private.json'}, []):
+        pointer.write_text(json.dumps(value))
+        assert load_featured_followup(tmp_path) is None
+    with pytest.raises(ValueError, match='Reserved'):
+        publish_snapshot(tmp_path, {**snapshot([]), 'run_id': 'featured'})
+
+
+def test_design_basis_is_visible_without_private_scope_identity(config, tmp_path):
+    result = result_fixture()
+    result.state['criteria'][1]['design_basis'] = [dict(kind='proposed_design',
+        assessment_scope_id='PRIVATE-SCOPE-ID', excerpt='The proposed service is delivered entirely online.')]
+    model = public_model(result, metadata(), config)
+    assert model['criteria'][1]['design_basis'] == [dict(kind='proposed_design',
+        excerpt='The proposed service is delivered entirely online.')]
+    assert 'PRIVATE-SCOPE-ID' not in json.dumps(model)
+    publish_snapshot(tmp_path, snapshot([model]))
+    with TestClient(create_app(data_dir=tmp_path, database_url='')) as client:
+        text = client.get('/runs/collection-a/models/model-a').text
+        assert 'Proposed design' in text
+        assert 'not independently observed external facts' in text
+        assert 'The proposed service is delivered entirely online.' in text
+
+
+def test_focused_pages_show_scenario_conditions_links_and_block_mixed_comparison(config, tmp_path):
+    parent_models = [public_model(result_fixture(), metadata(), config),
+                     public_model(result_fixture(), metadata('other-model'), config)]
+    publish_snapshot(tmp_path, snapshot(parent_models))
+    publish_snapshot(tmp_path, focused_snapshot(config), set_latest=False)
+    publish_featured_followup(tmp_path, 'focused-run')
+    with TestClient(create_app(data_dir=tmp_path, database_url='')) as client:
+        link = '/runs/focused-run/models/focused-model'
+        home = client.get('/').text
+        assert link in home and '/runs/collection-a' in home
+        assert 'Read the focused analysis' in client.get('/runs/collection-a/models/model-a').text
+        assert 'Read the focused analysis' not in client.get('/runs/collection-a/models/other-model').text
+        detail = client.get(link).text
+        for expected in ('Texas / Austin', '2 people', '$15,000', '90 days', 'excluding salaries',
+                         'Conditions of this proposed launch', 'B2B email support only',
+                         'do not confirm', 'See the original assessment'):
+            assert expected in detail
+        assert client.get('/runs/collection-a/compare?models=model-a,focused-model').status_code == 400
+        assert client.get('/runs/focused-run/compare?models=focused-model,model-a').status_code == 400
+        assert client.get('/runs/focused-run').status_code == 200

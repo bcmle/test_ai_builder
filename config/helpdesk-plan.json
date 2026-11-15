@@ -1,0 +1,104 @@
+{
+  "schema_version": "2",
+  "seed": {
+    "scope_id": "helpdesk-followup-template",
+    "base_model_id": "ae008373040d411c9e922e38082e8f13",
+    "variant_id": "helpdesk-texas-austin-template",
+    "neutral_model_description": "An email-first helpdesk for small Texas B2B teams, sold through a paid per-agent subscription.\nFollow-up of the existing Customer Support Helpdesk base model, not a new member of the twenty-model collection. The proposed launch is a narrow shared inbox with email ticket routing, response templates and basic team collaboration; no voice, telecommunications resale, physical fulfillment or complete omnichannel suite.\nLaunch geography: business operator and initial business customers are in Austin, Texas, United States. Target customers are small private B2B companies supporting adult employees or business representatives. No consumer, child, healthcare, financial, insurance or public-sector workflows are offered; the service does not perform a government function or depend on government procurement.\nProposed operating design: delivery, onboarding and support are online. We sell our own software subscription paid in advance monthly per agent; a licensed external payment provider collects that subscription and settles our own sales revenue to our business bank account. We do not receive, hold, transfer or refund funds for our customers' buyers, use Stripe Connect or operate a marketplace/wallet. We do not lend, guarantee borrowers, underwrite insurance, trade financial instruments or take trading positions. Ordinary subscription refunds, processor fees and chargebacks remain merchant commercial risks, not lending or insurance activities.\nProposed premises: an owner or tenant operates from an Austin residence, with no customer visits, no street-visible business activity or signage, no added on-street parking or substantial traffic or noise, and only occupants within municipal limits. Business use remains secondary to residential use. Private lease/HOA/deed permission and applicable occupancy, fire, health and building rules must be satisfied before paid operation. These are design conditions, not a claim that a particular address already qualifies.\nPrelaunch conditions: establish an eligible business and registrations, obtain applicable tax registration and correctly handle SaaS sales taxes, secure the operator's right to work and use the premises, open an eligible business bank/payment account and pass provider onboarding, and execute customer terms and data-processing agreements. Collect only necessary business support data, restrict access, encrypt transfers/storage, define deletion and incident handling, and prohibit sensitive regulated data and sale of personal information. No existing entity, permit, residence, employment authorization, bank account, payment-provider approval or customer base is asserted.\nScenario assumptions: two technical founders, 90 days, USD 15000 for the business test excluding salaries. Their engineering capability, available time and access to accounts/customers are unverified assumptions for conditional estimates; do not call those resources confirmed. A first paid pilot is a hypothesis, not observed customer willingness.\nIntercom is the original discovery example. Zendesk is an additional comparable for the same recurring support-software job; verify its official product, pricing and historical completed acquisition, and record the event date. Do not transfer the comparable company's legal obligations, scale or customer access to our proposed launch.\nEvaluate legal permissibility and special-industry licensing independently from primary rules and their applicability. Ordinary entity/tax registration is a launch condition, not automatically a special industry license. Absence of a general license or a discovered ban alone is insufficient. If an applicable obligation or substantial conflict remains unresolved, return unknown; do not bypass the mandatory gate to obtain a score."
+  },
+  "queries": [
+    {
+      "query": "Austin Texas no impact home based software SaaS business 229.902 HB 2464 permissible activity conditions 2025 2026",
+      "max_results": 3,
+      "advanced": true,
+      "domains": [
+        "austintexas.gov",
+        "capitol.texas.gov",
+        "tcss.legis.texas.gov"
+      ]
+    },
+    {
+      "query": "Texas online software SaaS business industry license federal regulated activities registration permits",
+      "max_results": 3,
+      "advanced": true,
+      "domains": [
+        "sba.gov",
+        "austintexas.gov",
+        "comptroller.texas.gov",
+        "sos.state.tx.us"
+      ]
+    },
+    {
+      "query": "Texas SaaS B2B support data processor commercial employment context consumer privacy security duties 541 521",
+      "max_results": 3,
+      "advanced": true,
+      "domains": [
+        "tcss.legis.texas.gov",
+        "texasattorneygeneral.gov",
+        "ftc.gov"
+      ]
+    },
+    {
+      "query": "Stripe United States hosted subscription payments own services merchant account verification activation requirements",
+      "max_results": 3,
+      "advanced": true,
+      "domains": [
+        "stripe.com",
+        "docs.stripe.com"
+      ]
+    },
+    {
+      "query": "Zendesk email ticket routing small business recurring agent pricing completed acquisition valuation November 2022",
+      "max_results": 3,
+      "advanced": true,
+      "domains": [
+        "zendesk.com",
+        "sec.gov"
+      ]
+    },
+    {
+      "query": "Intercom Zendesk helpdesk migration export conversations customer support switching integration limitations",
+      "max_results": 3,
+      "advanced": true,
+      "domains": [
+        "intercom.com",
+        "zendesk.com",
+        "helpscout.com"
+      ]
+    },
+    {
+      "query": "Austin Texas small B2B technology businesses chamber member directory networking events prospective customers",
+      "max_results": 3,
+      "advanced": true,
+      "domains": [
+        "austinchamber.com",
+        "austintexas.gov",
+        "capitalfactory.com"
+      ]
+    },
+    {
+      "query": "small B2B customer support team helpdesk paid subscription pricing customer case study email shared inbox",
+      "max_results": 3,
+      "advanced": true,
+      "domains": [
+        "zendesk.com",
+        "helpscout.com",
+        "intercom.com"
+      ]
+    }
+  ],
+  "max_new_reads": 24,
+  "priority_primary_urls": [
+    "https://tcss.legis.texas.gov/resources/LG/htm/LG.229.htm",
+    "https://comptroller.texas.gov/taxes/publications/96-259.php",
+    "https://comptroller.texas.gov/taxes/permit/",
+    "https://www.austintexas.gov/economic-development/projects/start-business",
+    "https://www.sba.gov/counseling/launch-your-business/",
+    "https://tcss.legis.texas.gov/resources/BC/htm/BC.541.htm",
+    "https://tcss.legis.texas.gov/resources/bc/htm/bc.521.htm",
+    "https://www.zendesk.com/newsroom/press-releases/consortium-led-by-hellman-friedman-and-permira-completes-acquisition-of-zendesk/",
+    "https://www.zendesk.com/pricing/",
+    "https://stripe.com/payments/checkout",
+    "https://docs.stripe.com/get-started/account/set-up"
+  ]
+}
