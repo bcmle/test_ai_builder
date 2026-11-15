@@ -1,13 +1,22 @@
 # Prototype deployment on Aeza
 
-## Current v1.3 read-only release
+## Current v1.3.1 domain release
 
-Caddy 2.10.2 exposes port 80 for GET/HEAD on `/`, `/runs/*`, `/models/*`,
+Caddy 2.10.2 exposes HTTPS at `https://ai-builder-lab.com/` for GET/HEAD on `/`, `/runs/*`, `/models/*`,
 `/compare`, `/methodology` and `/assets/*`. Other paths and methods return 404.
 The proxy has no provider credentials or application-data mount. Web reads only
 the separate public JSON projection; private evidence is never a static directory.
-The approved temporary prototype uses HTTP by IP; domain/HTTPS and owner controls
-are deferred. Local web health/preview remain at 127.0.0.1:8080.
+Domain HTTP redirects to HTTPS; the original HTTP by IP remains a read-only fallback.
+Owner controls are deferred. Local web health/preview remain at 127.0.0.1:8080.
+
+Aeza DNS has one apex A record pointing to `77.232.142.154` (TTL 300); no AAAA or
+www record is required. Public TCP 80/443 map to Caddy's internal 8080/8443.
+Caddy automatically obtains and renews the certificate. Its `/data` and `/config`
+are private persistent directories under `/var/lib/test-ai-builder/caddy`, owned
+by UID/GID 10001 with mode 0700. Never publish these files or certificate keys.
+CI uses an explicit HTTP-only site address and temporary directories, so it does
+not request production certificates. The server release checks trusted HTTPS,
+the domain redirect, private-route denial and TLS persistence after recreation.
 
 Before this release, reinstall the reviewed root-owned deployment bundle using
 the bootstrap command below and the existing age recipient. This adds Caddyfile
@@ -117,6 +126,8 @@ Persistent storage:
 
 - Named Docker volume `test_ai_builder_pgdata`: PostgreSQL.
 - `/var/lib/test-ai-builder/data`: managed evidence/preview, UID/GID 10001, mode 0700.
+- `/var/lib/test-ai-builder/caddy/data` and `config`: certificate/configuration state,
+  UID/GID 10001, mode 0700; retained across Caddy replacement.
 - `/var/backups/test-ai-builder`: root-only database/files backups.
 - `/var/lib/test-ai-builder/releases`: root-only commit/digest/migration manifests.
 - `/var/lib/test-ai-builder/export`: ciphertext only, root:ai-deploy 0750; files 0640.
@@ -139,7 +150,8 @@ ssh -N -L 8080:127.0.0.1:8080 OWNER@AEZA_HOST
 Open `http://127.0.0.1:8080/preview`. `/api/v1/health/live` checks the process;
 `/api/v1/health/ready` checks PostgreSQL/migration versions and artifact storage.
 No server port 8080 or PostgreSQL port is opened publicly. Caddy exposes only the
-read-only prototype routes on port 80; it blocks technical health and preview URLs.
+read-only prototype routes over domain HTTPS and the IP HTTP fallback; it blocks
+technical health and preview URLs.
 
 ## Backup, restore and rollback
 

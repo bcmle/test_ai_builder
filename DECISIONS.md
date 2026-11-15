@@ -27,6 +27,7 @@
 5. **A read-only website built from a public projection.** FastAPI/Jinja and small
    local CSS/JavaScript keep the UI simple to deploy. The website exposes only
    approved fields and short evidence excerpts; private source documents, provider
-   payloads and secrets are not served. HTTP by server IP is an explicitly accepted
-   temporary prototype choice. Add a domain, HTTPS and authentication before any
-   owner controls are exposed.
+   payloads and secrets are not served. Domain HTTPS at ai-builder-lab.com is added
+   in v1.3.1; Caddy renews certificates and retains TLS state across replacement.
+   The original read-only HTTP by server IP remains a fallback. Authentication
+   remains required before any owner controls are exposed.

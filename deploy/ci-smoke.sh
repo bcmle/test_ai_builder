@@ -7,11 +7,11 @@ umask 077
 SOURCE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 WORK=$(mktemp -d /tmp/ai-builder-ci-XXXXXX)
 PROJECT="ai-builder-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-install -d -o 10001 -g 10001 -m 700 "$WORK/data" "$WORK/restored"
+install -d -o 10001 -g 10001 -m 700 "$WORK/data" "$WORK/restored" "$WORK/caddy-data" "$WORK/caddy-config"
 printf 'AI_BUILDER_IMAGE=%s\nPOSTGRES_IMAGE=%s\nPOSTGRES_PASSWORD=%s\nMIGRATOR_PASSWORD=%s\nRUNTIME_PASSWORD=%s\n' \
  "$1" 'postgres:17.12-bookworm@sha256:40865bc877a289da75963d97d72b59633f639fc5af7a4e856bfa3714cae5b536' \
  "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > "$WORK/ci.env"
-printf 'services:\n  web:\n    volumes:\n      - "%s/data:/app/data"\n  migrate:\n    volumes:\n      - "%s/data:/app/data"\n  smoke:\n    volumes:\n      - "%s/data:/app/data"\nvolumes:\n  postgres-data:\n    name: "%s-pgdata"\n' "$WORK" "$WORK" "$WORK" "$PROJECT" > "$WORK/override.yaml"
+printf 'services:\n  caddy:\n    environment:\n      AI_BUILDER_SITE_ADDRESS: "http://localhost:8080"\n    volumes:\n      - "%s/caddy-data:/data"\n      - "%s/caddy-config:/config"\n  web:\n    volumes:\n      - "%s/data:/app/data"\n  migrate:\n    volumes:\n      - "%s/data:/app/data"\n  smoke:\n    volumes:\n      - "%s/data:/app/data"\nvolumes:\n  postgres-data:\n    name: "%s-pgdata"\n' "$WORK" "$WORK" "$WORK" "$WORK" "$WORK" "$PROJECT" > "$WORK/override.yaml"
 compose() { docker compose -p "$PROJECT" --project-directory "$SOURCE" --env-file "$WORK/ci.env" -f "$SOURCE/compose.yaml" -f "$WORK/override.yaml" "$@"; }
 cleanup() {
   local result=$?
@@ -24,6 +24,9 @@ cleanup() {
 trap cleanup EXIT
 bash -n "$SOURCE"/deploy/*.sh
 compose config --quiet
+# Adapt both address modes without starting Caddy or contacting any issuer.
+compose run --rm --no-deps caddy caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile > "$WORK/caddy-http.json"
+compose run --rm --no-deps -e AI_BUILDER_SITE_ADDRESS=https://ai-builder-lab.com caddy caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile > "$WORK/caddy-production.json"
 compose up -d --wait postgres
 compose exec -T postgres psql -X -q -U postgres -d ai_builder < "$SOURCE/deploy/roles.sql"
 compose run --rm --no-deps migrate
@@ -73,6 +76,7 @@ cmp "$WORK/fingerprint.txt" "$WORK/restored-fingerprint.txt"
 echo 'Technical Compose smoke, restart, runtime privileges and restore checks passed.'
 compose up -d --wait web caddy
 curl --fail --silent --show-error http://127.0.0.1/ > "$WORK/public-home.html"
+curl --fail --silent --show-error --resolve localhost:80:127.0.0.1 http://localhost/ >/dev/null
 for path in preview health/ready api/v1/health/ready; do
   [[ $(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1/$path") == 404 ]]
 done

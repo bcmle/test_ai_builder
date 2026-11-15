@@ -83,15 +83,17 @@ accounting and zero external API calls; these are not actual charges.
 
 Source: [bcmle/test_ai_builder](https://github.com/bcmle/test_ai_builder).
 Aeza runs Ubuntu 24.04 on x86_64. OpenAI Astra and Tavily are external APIs; research
-runs on Aeza, not the owner's Mac. The prototype exposes read-only HTTP on the server
-IP through Caddy. Private health/synthetic preview remain on `127.0.0.1:8080`.
-Domain/HTTPS and owner access control are deferred; no paid action is available online.
+runs on Aeza, not the owner's Mac. The v1.3.1 deployment serves the read-only prototype
+at **https://ai-builder-lab.com/** through Caddy with automatic certificate renewal.
+Domain HTTP redirects to HTTPS; the earlier server-IP HTTP remains a fallback.
+Private health/synthetic preview remain on `127.0.0.1:8080`.
+Owner access control is deferred; no paid action is available online.
 
 Credentials, runtime databases, private evidence and local `full_tt.md` are excluded from
 Git and the Docker context. Provider keys are not passed to technical smoke or CI.
 
 The earlier SSH-tunnel viewing check was deferred. The read-only prototype has its
-own public-IP acceptance in specs/11-acceptance.md; it does not claim completion of
+own public-site acceptance in specs/11-acceptance.md; it does not claim completion of
 the extended full-product acceptance matrix. See [five decisions](DECISIONS.md) and
 [honest limitations](LIMITATIONS.md).
 
