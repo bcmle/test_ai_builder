@@ -1,6 +1,6 @@
-# 06. Спецификация промптов v1.0
+# 06. Спецификация промптов v1.1
 
-Статус: APPROVED BASELINE v1.0. Ниже начальные тексты ролей для реализации и дальнейшего eval. Они не прошли испытания на реальной модели. Каждый промпт получает version/hash; одинаковые версии используются в одном run.
+Статус: APPROVED BASELINE v1.1. Ниже начальные тексты ролей для реализации и дальнейшего eval. Они не прошли испытания на реальной модели. Каждый промпт получает version/hash; одинаковые версии используются в одном run.
 
 ## Сборка запроса
 
@@ -53,3 +53,7 @@ Structured output ограничивает формат, но не доказа�
 ## Baseline v1.0 output policy
 
 All generated product-facing analysis, cards, explanations, status messages and exports are in English. Preserve original source quotations and stable IDs. LLMs do not invent token usage or dollar costs: usage and billing values are populated by adapters and deterministic accounting. Approved bounded intervals are valid final factor inputs; the deterministic ranker uses conservative bounds and goal-feasibility groups from 07-ranking.
+
+## LangGraph input boundary v1.1
+
+GraphState/checkpoint/trace не являются входом промпта. Каждый узел формирует пакет по роли и whitelist; общие messages/history/reports не передаются через автоматическую сериализацию состояния. Verifier получает только разрешённый handoff, Critic никогда не получает Verifier output. Resume использует ту же зафиксированную версию промпта и входа либо создаёт новую аналитическую ревизию по правилам; checkpoint IDs не выдаются как evidence IDs. Секреты и приватные billing payload отсутствуют во всех prompts/tool outputs.
