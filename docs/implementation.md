@@ -33,3 +33,18 @@ Python 3.13; fully pinned dependencies in requirements.lock. TestClient currentl
 Starlette warning that its HTTPX integration is deprecated. It still passes the health test; upgrading
 the testing transport is independent of the runtime API. Docker is not installed on the local host,
 so image building and Linux/container smoke tests remain unverified.
+
+## Milestone 2 — metered provider transports
+
+Added OpenAI Responses structured-output and Tavily Search/Extract adapters. Each physical attempt
+has a durable budget reservation and usage record; retries share only logical_request_id, not billing
+identity. Authentication/quota failures pause the run; missing usage/uncertain transport costs remain
+reserved. Requests have bounded output, timeouts and at most two transport retries. OpenAI requests
+use fresh input with no shared conversation/previous_response_id. Strict JSON output, refusals and
+incomplete generations are distinguished from successful analysis. Tests use HTTPX MockTransport.
+
+These adapters have NOT yet been exercised against the user's live keys. The worker must supply the
+run's remaining active-time deadline and enforce lease ownership before invoking an adapter. Global
+circuit-breaker state, schema repair, role tool loops, prompt audit and all business workflows remain
+pending. URL checks reject private initial/returned extraction URLs. Tavily's internal redirect path
+is not exposed, so this does not claim end-to-end redirect/robots enforcement or fulfill full A18.

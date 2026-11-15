@@ -12,9 +12,10 @@ Baseline v1.0 is approved. The first implementation milestone provides:
 - whitelist handoff with dependency/snapshot validation and risk reconciliation;
 - SQLite WAL storage, atomic run/study budget reservations, usage corrections and fencing tokens;
 - immutable content-addressed artifacts and integrity-checked manifests;
-- FastAPI liveness/readiness endpoints which do not call paid services.
+- FastAPI liveness/readiness endpoints which do not call paid services;
+- metered OpenAI Responses and Tavily Search/Extract adapters with bounded transport retries.
 
-**This is not yet the complete research application.** Live provider adapters, the orchestration worker,
+**This is not yet the complete research application.** Live integration verification, the orchestration worker,
 catalogue, publication/review flows, owner authentication, English product UI, usage dashboard and
 deployment pipeline are subsequent implementation milestones. No real research has been performed.
 See [implementation progress](docs/implementation.md) for acceptance coverage and limitations.

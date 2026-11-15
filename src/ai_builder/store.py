@@ -208,14 +208,22 @@ class Store:
                 db.execute("UPDATE runs SET status='paused',control_version=control_version+1 WHERE id=?", (row["run_id"],))
                 self._event(db, row["run_id"], "reservation_underestimated", {"request_id": request_id})
 
-    def mark_unknown(self, request_id):
+    def mark_unknown(self, request_id, error_kind="unknown_usage"):
         with self.transaction() as db:
             row = db.execute("SELECT * FROM usage WHERE request_id=?", (request_id,)).fetchone()
             if not row:
                 raise KeyError(request_id)
             if row["state"] == "reserved":
-                db.execute("UPDATE usage SET state='unknown',updated_at=? WHERE request_id=?", (time.time(), request_id))
-                self._event(db, row["run_id"], "usage_unknown", {"request_id": request_id})
+                db.execute("UPDATE usage SET state='unknown',metrics_json=?,updated_at=? WHERE request_id=?",
+                           (json.dumps({"status": "unknown", "error_kind": error_kind}), time.time(), request_id))
+                self._event(db, row["run_id"], "usage_unknown", {"request_id": request_id, "error_kind": error_kind})
+
+    def pause_run(self, run_id, reason):
+        with self.transaction() as db:
+            changed = db.execute("UPDATE runs SET status='paused',control_version=control_version+1 "
+                                 "WHERE id=? AND status IN ('selecting','queued','running')", (run_id,)).rowcount
+            if changed:
+                self._event(db, run_id, "run_paused", {"reason": reason})
 
     def release(self, request_id, reason):
         if not reason.strip():
