@@ -14,6 +14,8 @@ printf 'AI_BUILDER_IMAGE=%s\nPOSTGRES_IMAGE=%s\nPOSTGRES_PASSWORD=%s\nMIGRATOR_P
 printf 'services:\n  web:\n    volumes:\n      - "%s/data:/app/data"\n  migrate:\n    volumes:\n      - "%s/data:/app/data"\n  smoke:\n    volumes:\n      - "%s/data:/app/data"\nvolumes:\n  postgres-data:\n    name: "%s-pgdata"\n' "$WORK" "$WORK" "$WORK" "$PROJECT" > "$WORK/override.yaml"
 compose() { docker compose -p "$PROJECT" --project-directory "$SOURCE" --env-file "$WORK/ci.env" -f "$SOURCE/compose.yaml" -f "$WORK/override.yaml" "$@"; }
 cleanup() {
+  local result=$?
+  if (( result != 0 )); then compose logs --no-color --tail 60 web caddy || true; fi
   # Only the unique CI project/volume is removed, never the production project.
   compose down --volumes --remove-orphans >/dev/null || true
   # Keep the temp reports for CI artifact collection and diagnosis; no recursive rm.
