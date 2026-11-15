@@ -1,7 +1,23 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>{% block title %}Business models · Research before launch{% endblock %}</title><link rel="stylesheet" href="/assets/public.css"><script src="/assets/public.js" defer></script></head>
-<body><a class="skip" href="#main">Skip to content</a>
-<header class="site-header wrap"><a class="brand" href="/" aria-label="Business models home"><span class="brand-mark">b.</span><span>Business<br>models</span></a><nav aria-label="Main navigation"><a href="{% if snapshot %}/runs/{{ snapshot.run_id }}{% else %}/{% endif %}">Research</a><a href="/methodology">How it works</a></nav><span class="header-note">Independent thinking.<br>Evidence in view.</span></header>
-<main id="main" class="wrap">{% block content %}{% endblock %}</main>
-<footer class="site-footer wrap"><div><a class="brand footer-brand" href="/">Business models<span class="brand-dot">●</span></a><p>Make the next decision with the evidence in front of you.</p></div><div class="footer-links"><a href="/methodology">Methodology</a><span>Research informs a decision. It does not guarantee demand.</span></div></footer>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light">
+  <title>{% block title %}Business models · Research before launch{% endblock %}</title>
+  <link rel="preload" href="/assets/onest-variable.ttf" as="font" type="font/ttf" crossorigin>
+  <link rel="stylesheet" href="/assets/public.css"><script src="/assets/public.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="site-header">
+  <div class="header-inner wrap">
+    <a class="brand" href="/" aria-label="Business models home"><span class="brand-mark">b.</span><span>Business<br>models</span></a>
+    <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-navigation" aria-label="Menu" hidden><span></span><span></span></button>
+    <nav id="site-navigation" aria-label="Main navigation">
+      <div class="nav-links"><a href="{% if snapshot %}/runs/{{ snapshot.run_id }}{% else %}/#research{% endif %}">Research</a><a href="/methodology">How it works</a></div>
+      <a class="button button-small nav-cta" href="{% if snapshot %}/runs/{{ snapshot.run_id }}{% else %}/#research{% endif %}">Explore models <span aria-hidden="true">→</span></a>
+    </nav>
+  </div>
+</header>
+<main id="main" class="{% block main_class %}wrap{% endblock %}">{% block content %}{% endblock %}</main>
+<footer class="site-footer"><div class="footer-inner wrap"><div><a class="brand footer-brand" href="/">Business models<span class="brand-dot">●</span></a><p>Make the next decision with the evidence in front of you.</p></div><div class="footer-links"><a href="/methodology">Methodology <span aria-hidden="true">↗</span></a><span>Research informs a decision.<br>It does not guarantee demand.</span></div></div></footer>
 </body></html>
