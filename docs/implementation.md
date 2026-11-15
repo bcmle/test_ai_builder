@@ -155,3 +155,10 @@ Compose isolates the network and binds web to server loopback only. Separate
 migration/runtime DB roles, explicit bootstrap, CI image smoke/restore checks,
 and manual digest-based deployment are described in docs/deployment.md. This
 profile has no persistent live worker and does not permit live API traffic.
+
+GitHub CI passed 86 tests, the installed Linux image, restricted runtime permissions,
+PostgreSQL/web restart with no repeated fixture calls, and isolated restore. Health
+also accepts the unversioned `/health/live` and `/health/ready` routes from the deploy plan.
+The encrypted export uses the owner's age public recipient; Actions transports only
+ciphertext, with the private decryption key retained on the Mac. Remote release and
+Mac restore verification are tracked separately from these CI results.

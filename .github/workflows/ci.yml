@@ -45,3 +45,8 @@ jobs:
         run: docker build --platform linux/amd64 --label org.opencontainers.image.revision="$GITHUB_SHA" --label io.ai-builder.deploy-bundle-sha256="$(bash deploy/bundle-hash.sh)" -t ai-builder-ci:tested .
       - name: Container smoke, restart and restore
         run: sudo --preserve-env=PATH,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT bash deploy/ci-smoke.sh ai-builder-ci:tested
+      - name: Encrypted export and deploy-user permissions
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y age
+          sudo --preserve-env=PATH,GITHUB_ACTIONS,GITHUB_RUN_ID,GITHUB_RUN_ATTEMPT bash deploy/ci-export-smoke.sh

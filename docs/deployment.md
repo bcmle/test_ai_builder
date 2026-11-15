@@ -16,7 +16,7 @@ frontend/backend network](https://docs.docker.com/reference/compose-file/network
 ## Bootstrap once
 
 Prerequisites: reviewed commit, Ubuntu server with Docker Engine + Compose v2, curl,
-openssl, sudo, flock, an active rental, verified SSH host fingerprint, at least 2 GiB
+openssl, age, sudo, flock, an active rental, verified SSH host fingerprint, at least 2 GiB
 free disk. Confirm `uname -m`; CI must build the matching Linux architecture. Docker
 installation and changes to SSH/firewall are separate bootstrap actions. No database
 or existing provider secret file is deleted by these scripts.
@@ -26,7 +26,9 @@ Aeza. Run as root, passing the PostgreSQL 17.12 bookworm manifest digest verifie
 this release:
 
 ```sh
-bash deploy/bootstrap.sh 'postgres:17.12-bookworm@sha256:40865bc877a289da75963d97d72b59633f639fc5af7a4e856bfa3714cae5b536'
+bash deploy/bootstrap.sh \
+  'postgres:17.12-bookworm@sha256:40865bc877a289da75963d97d72b59633f639fc5af7a4e856bfa3714cae5b536' \
+  'OWNER_AGE_PUBLIC_RECIPIENT'
 ```
 
 The script installs fixed root-owned deployment files under `/opt/test-ai-builder`,
@@ -38,7 +40,12 @@ an explicit root bootstrap update from a reviewed checkout.
 
 The generated deployment env contains PostgreSQL image and three independent random
 passwords (postgres administration, `ai_migrator`, `ai_runtime`). It is root:root 0600.
-Provider files `/etc/test-ai-builder/secrets.env` and `tavily.env` are never touched.
+The second bootstrap argument is the owner’s age X25519 public recipient (`age1…`),
+not a private key. It is validated by age and stored root:root 0600 at
+`/etc/test-ai-builder/backup-recipient.age`. Re-running bootstrap with a different
+recipient fails; key rotation requires an explicit recovery plan. The private key
+stays on the Mac and is never placed in GitHub or on Aeza. Provider files
+`/etc/test-ai-builder/secrets.env` and `tavily.env` are never touched.
 Runtime has DML on app/checkpoint data and sequence usage, but no schema/database DDL;
 migration-version tables are read-only to runtime. Migrations use `ai_migrator` only.
 
@@ -76,7 +83,11 @@ then stops web, restarts the existing PostgreSQL container without deleting its
 volume, waits for PostgreSQL health, brings web back and rechecks readiness/preview.
 The repeated smoke must reuse the saved run with zero new fixture HTTP calls. A post-run backup is restored into a new scratch database and directory, where
 smoke validates persisted checkpoints, usage and artifacts without new model calls.
-Only then is success recorded in `/var/lib/test-ai-builder/releases/COMMIT.json`.
+After restore verification, the release manifest is recorded at
+`/var/lib/test-ai-builder/releases/COMMIT.json`. The verified snapshot and release
+manifest are streamed through age encryption to an atomic
+`/var/lib/test-ai-builder/export/COMMIT.tar.age` file. Deployment reports success
+only after this ciphertext export is complete.
 
 The second smoke invocation reports zero fixture HTTP calls and unchanged 15 physical
 fixture attempts / synthetic tariff total. These values are fixture accounting, not
@@ -89,7 +100,12 @@ Persistent storage:
 - Named Docker volume `test_ai_builder_pgdata`: PostgreSQL.
 - `/var/lib/test-ai-builder/data`: managed evidence/preview, UID/GID 10001, mode 0700.
 - `/var/backups/test-ai-builder`: root-only database/files backups.
-- `/var/lib/test-ai-builder/releases`: commit/digest/migration release manifests.
+- `/var/lib/test-ai-builder/releases`: root-only commit/digest/migration manifests.
+- `/var/lib/test-ai-builder/export`: ciphertext only, root:ai-deploy 0750; files 0640.
+
+The state parent is root:ai-deploy 0710, granting traversal but no directory listing.
+Plaintext data remains UID 10001 mode 0700; releases/restore reports/backups remain
+root-only. The deploy user can read exported ciphertext, not plaintext backups.
 
 Do not use `docker compose down -v`. Do not print `docker compose config` without
 `--quiet`: interpolated environment values contain database credentials.
@@ -116,12 +132,20 @@ Restore verification creates and later drops only its own uniquely named scratch
 DB. Restored file trees and results remain as private verification evidence; the
 production DB/path are not overwritten. No migrations run during restore verification.
 
-Before considering the first technical deployment accepted, transfer one verified
-snapshot over authenticated SSH to the Mac and encrypt it with the owner's backup
-public key (for example age). Keep the private decryption key separately from the
-archive and test decrypting the archive and checking SHA256SUMS. Do not commit either
-archive or key. Automated daily external backups and retention from spec 10 are a
-separate prerequisite before live/public operation; a same-VPS snapshot is insufficient.
+Before the technical deployment is accepted, transfer the ciphertext off the VPS.
+The release workflow reads only `/var/lib/test-ai-builder/export/COMMIT.tar.age`
+through the unprivileged `ai-deploy` SSH account and stores it as a GitHub Actions
+artifact. The Mac downloads that artifact with the GitHub CLI; direct Mac→Aeza SSH
+is not required for backup transport. Decrypt locally with the owner’s private age
+key into a private scratch directory, extract the snapshot and verify its SHA256SUMS.
+Keep the encrypted archive and private key separately. Never upload plaintext dumps,
+recipient private keys or decrypted files as workflow artifacts or commit them.
+
+This transport complements SSH encryption with encryption to the owner’s key, so
+GitHub and the deploy user only receive ciphertext. A failed encryption/export or
+failed local decrypt/hash check leaves off-VPS backup acceptance incomplete. Automated
+daily external backups and retention from spec 10 remain prerequisites before live/
+public operation; a same-VPS snapshot alone is insufficient.
 
 Rollback to a previous image is allowed only after confirming domain/checkpoint
 schema compatibility. Incompatible rollback requires a reviewed restore plan with
@@ -145,3 +169,12 @@ It uses a unique CI volume and scratch directory, checks denied runtime DDL, run
 actual smoke twice across a PostgreSQL restart and web stop/start, then restores the dump/files into a scratch
 database and validates them through smoke again. Cleanup removes only that CI project
 and volume. Never upload its generated ci.env or database dump as a public artifact.
+
+CI also executes `deploy/ci-export-smoke.sh` as root on a disposable GitHub-hosted
+runner after installing `age`. It bootstraps the real bundle with a generated test
+recipient, checks that a different recipient is rejected, and invokes the actual
+export helper on an explicitly synthetic snapshot. It proves `ai-deploy` can read
+ciphertext while being denied the plaintext dump, deployment credentials, release
+manifest and test private key; then decrypts and checks both outer and evidence
+hashes. PostgreSQL restoration is tested separately by `ci-smoke.sh`. Export-test
+private keys and scratch files must never be uploaded as workflow artifacts.

@@ -78,5 +78,6 @@ printf '%s\n' "$AI_BUILDER_IMAGE" > "$STATE/current-image.next"
 mv "$STATE/current-image.next" "$STATE/current-image"
 MIGRATIONS=$(compose exec -T postgres psql -X -qAt -U postgres -d ai_builder -c "SELECT coalesce(json_agg(row_to_json(m))::text,'[]') FROM (SELECT name,checksum FROM app.schema_migrations ORDER BY name) m")
 printf '{"commit":"%s","image":"%s","deployed_at":"%s","migrations":%s,"mode":"technical-no-live-api"}\n' "$COMMIT" "$AI_BUILDER_IMAGE" "$(date -u +%FT%TZ)" "$MIGRATIONS" > "$STATE/releases/$COMMIT.json"
+"$ROOT/deploy/export-backup.sh" "$COMMIT" "${LATEST_BACKUP##*/}"
 printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$COMMIT" "$AI_BUILDER_IMAGE" >> "$STATE/deploy-history.log"
 echo "Technical deployment ready: $COMMIT"

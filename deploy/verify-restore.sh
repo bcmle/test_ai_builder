@@ -32,4 +32,5 @@ docker compose --project-directory "$ROOT" --env-file "$ENV_FILE" -f "$ROOT/comp
 compose exec -T postgres psql -X -qAt -U postgres -d "$CHECK_DB" < "$ROOT/deploy/fingerprint.sql" > "$CHECK_DIR/fingerprint-after.txt"
 cmp "$SNAPSHOT/fingerprint.txt" "$CHECK_DIR/fingerprint-after.txt"
 printf 'Verified restore %s at %s\n' "$1" "$(date -u +%FT%TZ)" > "$CHECK_DIR/result.txt"
+printf '%s\n' "$(date -u +%FT%TZ)" > "$SNAPSHOT/RESTORE_VERIFIED"
 echo "Restore verified; report: $CHECK_DIR/result.txt"

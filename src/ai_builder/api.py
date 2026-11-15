@@ -65,10 +65,12 @@ def create_app(data_dir=None, config_path=None, *, database_url=None, technical_
     app = FastAPI(title='AI Builder', version='0.1.0', lifespan=lifespan,
                   docs_url=None, redoc_url=None, openapi_url=None)
 
+    @app.get('/health/live')
     @app.get('/api/v1/health/live')
     async def live():
         return {'status':'alive'}
 
+    @app.get('/health/ready')
     @app.get('/api/v1/health/ready')
     async def ready():
         try:

@@ -15,6 +15,7 @@ paths = (
     'deploy/bundle-hash.sh',
     'deploy/common.sh',
     'deploy/deploy.sh',
+    'deploy/export-backup.sh',
     'deploy/fingerprint.sql',
     'deploy/grants.sql',
     'deploy/roles.sql',
