@@ -91,7 +91,8 @@ class MeteredHTTP:
             raise ProviderFailure("missing_credentials")
         logical = uid()
         for attempt in range(3):
-            timeout = min(120, self.deadline - time.monotonic()) if self.deadline else 120
+            response_limit = 600 if provider == 'openai' and payload.get('reasoning', {}).get('effort') == 'high' else 120
+            timeout = min(response_limit, self.deadline - time.monotonic()) if self.deadline else response_limit
             if timeout <= 0:
                 raise ProviderFailure("deadline_exhausted")
             request_id = uid()

@@ -156,3 +156,20 @@ def test_long_retry_after_pauses_instead_of_retrying_early(ledger):
 def test_private_sources_rejected(url):
     with pytest.raises(ValueError):
         asyncio.run(public_url(url))
+
+
+def test_high_reasoning_response_wait_is_bounded_by_run_deadline(ledger):
+    import time
+    store, _, run, _ = ledger
+    observed = []
+    def handler(request):
+        observed.append(request.extensions['timeout']['read'])
+        return httpx.Response(200, json=model_result())
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            for effort, remaining in [('high', None), ('high', 45), ('low', None)]:
+                transport = MeteredHTTP(store, run, 'research', pricing(), client=client,
+                    deadline=time.monotonic() + remaining if remaining else None)
+                await OpenAIAdapter(transport, 'fixture', reasoning_effort=effort).generate('English', {}, Output)
+    asyncio.run(scenario())
+    assert observed[0] == 600 and 0 < observed[1] <= 45 and observed[2] == 120
