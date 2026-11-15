@@ -25,7 +25,7 @@ jobs:
           POSTGRES_DB: ai_builder_test
         ports: ['5432:5432']
         options: >-
-          --health-cmd 'pg_isready -U postgres -d ai_builder_test'
+          --health-cmd "pg_isready -U postgres -d ai_builder_test"
           --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
