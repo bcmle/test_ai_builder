@@ -1,6 +1,6 @@
 # 03. Контракты данных и состояния
 
-Статус: DRAFT v0.2. Это описание будущих схем, не исполняемые JSON Schema.
+Статус: DRAFT v0.3. Это описание будущих схем, не исполняемые JSON Schema.
 
 ## Общие правила
 
@@ -56,6 +56,18 @@ method: primary_source / secondary_source / calculation / model_judgment / human
 - DiscoveryCycle: study_id, cycle_id, query_ids, newly_read_unique_pages, newly_discovered_unique_models, novelty_ratio nullable. При знаменателе 0 ratio=null, насыщение не засчитывается.
 - CandidateBacklog: global_model_id, study_id, evidence_ids, state(new/selected/processed/deferred/duplicate), run_ids, deferral_reason nullable, duplicate_of nullable.
 - Run дополнительно хранит study_id и market_code. ID модели глобален в рамках приложения; факты, роли, оценки и результаты рынка относятся к run/model/market, не перезаписывают результаты другой страны.
-- Ранее описанный алгоритм выбора 12 применяется внутри очереди текущего рынка. Переход между рынками не происходит после одного batch автоматически.
+- Алгоритм формирования подборки из 13-catalog применяется внутри очереди текущего рынка. Переход между рынками не происходит после одного batch автоматически.
 
 Эти контракты расширяют v0.1. Финальные миграции будут проектироваться после ревью, существующей базы приложения пока нет.
+
+## Дополнение v0.3: уровни каталога и единица оценки
+
+BusinessModel теперь является базовой моделью: id/base_model_id, core_job, value_mechanism, revenue_mechanism, primary_group_id, group_tags[], taxonomy_version, first_seen_at, source_ids. Детали конкретного сегмента и запуска относятся к ModelVariant: id/variant_id, base_model_id, customer_segment, offer, sales_channel, dependencies, differentiating_claim_ids, analog_company_ids, first_seen_at. Поля customer/target_market прежней модели читаются из выбранного варианта/контекста run, не считаются общими для всех вариантов.
+
+AssessmentScope: id, run_id, base_model_id, variant_id, market_code, launch_context_hash. Все Claim/Risk/Verification/CriterionResult/FactorAssessment/Score/Card дополнительно имеют assessment_scope_id; model_id сохраняется как базовый ID для группировки. Уникальность этапа/кэша включает assessment_scope_id, чтобы не смешивать проверки разных вариантов. Источник может быть общим, вердикт/балл не переиспользуется без проверки применимости.
+
+CollectionSnapshot: id, run_id, catalog_version, selection_policy_version, target_count, members[{base_model_id, variant_id, assessment_scope_id, primary_group_id, membership_rank, selection_reason}], created_at. Состав неизменяем после начала фильтров; новый состав означает новый run. В members нет повторных base_model_id. Финальная подборка не равна финальному рейтингу: все выбранные модели остаются в ней со своими статусами.
+
+CandidateBacklog хранит company/product-кандидата и связь с base_model_id/variant_id после нормализации; до определения эти поля nullable и state=unclassified. Дедупликация возвращает duplicate_of для кандидата и отношения same_base/different_variant с причинами. Каталог и membership snapshots версионируются; публикация не меняется при исправлении текущей группировки.
+
+Счётчики: discovered_candidates (компании/продукты), unique_base_models, variants, collection_models, ranked_variants. Каждый явно подписан; число вариантов или аналогов не подменяет выполнение R01.
