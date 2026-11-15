@@ -1,0 +1,8 @@
+{
+  "provider": "tavily", "model": "tavily",
+  "effective_date": "2026-11-15",
+  "source_url": "https://docs.tavily.com/documentation/api-credits",
+  "currency": "USD", "input_per_million": "0",
+  "cached_input_per_million": "0", "output_per_million": "0",
+  "per_credit": "0.008", "input_context_limit": 1
+}

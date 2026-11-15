@@ -162,3 +162,47 @@ also accepts the unversioned `/health/live` and `/health/ready` routes from the 
 The encrypted export uses the owner's age public recipient; Actions transports only
 ciphertext, with the private decryption key retained on the Mac. Remote release and
 Mac restore verification are tracked separately from these CI results.
+
+### First Aeza technical release — 15 November 2026
+
+PR #1 was merged after successful CI. Manual [release 43753431745](https://github.com/bcmle/test_ai_builder/actions/runs/43753431745)
+deployed commit `cf5c3261a59dfcff5c9d9cf6c5fb23896f33a40a` with image digest
+`sha256:5d8792d3abcc40c32e7e623da558051401ce2d01b9beeb9b9fd7dfed347ffae0`.
+The exact image passed 86 tests and Linux Compose checks. Aeza then passed explicit
+migrations, synthetic graph, PostgreSQL/web restart, zero-call replay and isolated restore.
+Release manifest records all three application migration checksums.
+
+Readiness reports PostgreSQL/schema version 3. Server inspection confirms only
+`127.0.0.1:8080` is published; PostgreSQL has no host port. `/preview` matches its
+stored SHA-256. No external API calls occurred; synthetic accounting is not billing.
+Provider secret file permissions remain root:root 0600; their values were not read.
+
+A verified backup was encrypted for the owner's age public recipient and transported
+through an Actions artifact. On the Mac the archive was downloaded, decrypted and all
+snapshot/evidence checksums passed. Private decryption material remains on the Mac,
+outside the Git repository. The temporary local test PostgreSQL was stopped.
+
+The user explicitly deferred the Mac SSH-tunnel viewing check. It remains outstanding,
+not a passed acceptance test. Live discovery/worker, evidence/manual-review completion,
+live assessments and public product access remain subsequent stages. This release does
+not claim complete A59/A60 or product acceptance.
+
+## Milestone 5 — one-model source acquisition
+
+Tavily discovery now feeds controlled HTTP reads, Trafilatura/pypdf extraction,
+immutable source artifacts and the existing single-model graph. PostgreSQL keeps
+search order, dispositions, read reservations, snapshots and frozen run inputs.
+Search snippets never enter analytical evidence. Interrupted requests retain their
+receipts/reservations; completed reports replay without new provider requests.
+
+The user prioritised one visible live card before catalogue, permanent worker and
+complete owner/public UI work. The initial scheduling-software scope is a test of
+the working path, not a preselected passing investment recommendation. Failed or
+unknown criteria remain visible and do not receive a final ranking.
+
+See docs/source-research.md for the command and boundaries. Provider prices used by
+the initial run are saved as dated configuration; no further tariff research is
+required by the user. Astra requests select Standard processing and explicit caching
+without breakpoints, so automatic cache writes are outside this first execution.
+The manual research-result workflow only downloads an already encrypted HTML report;
+it does not run analysis or expose source files or credentials.

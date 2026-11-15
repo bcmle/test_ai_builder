@@ -188,6 +188,11 @@ class OpenAIAdapter:
                    "input": [{"role": "user", "content": json.dumps(packet, ensure_ascii=False)}],
                    "reasoning": {"effort": self.reasoning_effort}, "max_output_tokens": max_output_tokens,
                    "text": {"format": {"type": "json_schema", "name": output_type.__name__, "strict": True, "schema": schema}}}
+        if self.transport.pricing.model == 'gpt-6-astra':
+            # The current tariff covers ordinary input/output only. Explicit
+            # mode without breakpoints avoids unaccounted automatic cache writes.
+            payload['prompt_cache_options'] = {'mode': 'explicit'}
+            payload['service_tier'] = 'default'
         # UTF-8 byte bound plus a conservative framing allowance; reject long-context tariff crossover.
         input_upper = len(json.dumps(payload, ensure_ascii=False).encode()) + 4096
         tariff = self.transport.pricing
@@ -227,10 +232,12 @@ class TavilyAdapter:
         credits = Decimal(str(data["usage"]["credits"]))
         return self.transport.pricing.credit_cost(credits), {"credits": str(credits)}
 
-    async def search(self, query: str, advanced=False, domains=None):
+    async def search(self, query: str, advanced=False, domains=None, max_results=5):
         if not query.strip() or len(query) > 2000:
             raise ValueError("Search query must be nonempty and bounded")
-        payload = {"query": query, "search_depth": "advanced" if advanced else "basic", "max_results": 5,
+        if type(max_results) is not int or not 1 <= max_results <= 10:
+            raise ValueError("Search result limit must be between one and ten")
+        payload = {"query": query, "search_depth": "advanced" if advanced else "basic", "max_results": max_results,
                    "include_usage": True, "include_answer": False, "include_raw_content": False,
                    "auto_parameters": False, "include_domains": domains or []}
         return await self.transport.post("search", self.key, payload,
