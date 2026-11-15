@@ -1,4 +1,27 @@
 (() => {
+  const menu = document.querySelector('.menu-toggle');
+  const navigation = document.getElementById('site-navigation');
+  if (menu && navigation) {
+    menu.hidden = false;
+    navigation.classList.add('collapsible');
+    const closeMenu = () => menu.setAttribute('aria-expanded', 'false');
+    menu.addEventListener('click', () => {
+      menu.setAttribute('aria-expanded', String(menu.getAttribute('aria-expanded') !== 'true'));
+    });
+    navigation.addEventListener('click', event => {
+      if (event.target.closest('a')) closeMenu();
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && menu.getAttribute('aria-expanded') === 'true') {
+        closeMenu();
+        menu.focus();
+      }
+    });
+    document.addEventListener('click', event => {
+      if (!event.target.closest('.site-header')) closeMenu();
+    });
+  }
+
   const bar = document.querySelector('[data-compare-bar]');
   if (bar) {
     const key = `business-models-compare:${bar.dataset.run}`;

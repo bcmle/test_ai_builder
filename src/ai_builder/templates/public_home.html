@@ -1,7 +1,47 @@
-{% extends 'public_base.html' %}{% from 'public_parts.html' import model_card, compare_bar with context %}
+{% extends 'public_base.html' %}
+{% from 'public_parts.html' import model_card, compare_bar with context %}
+{% block main_class %}home-main{% endblock %}
 {% block content %}
-{% include 'public_followup_link.html' %}
-<section class="hero"><div class="hero-copy"><span class="eyebrow">Business research, made readable</span><h1>A clearer view<br>of what to <span class="serif">build.</span></h1><p>Explore business models, question the assumptions, and follow the evidence. Find a practical path to testing demand and a first paying customer.</p><div class="hero-actions"><a class="button" href="{% if snapshot %}/runs/{{ snapshot.run_id }}{% else %}#research{% endif %}">Explore the research <span aria-hidden="true">↗</span></a><a class="understated-link" href="/methodology">See the approach</a></div><span class="hero-footnote">One launch scenario. Sources you can inspect.</span></div><aside class="hero-panel"><div class="panel-kicker"><span class="tiny-dot"></span>{{ snapshot.market if snapshot else 'United States' }} · Initial research</div><div class="hero-number">{{ snapshot.expected_count if snapshot else 20 }}<span>models to<br>investigate</span></div><div class="hero-panel-rule"></div><div class="hero-panel-row"><span>Launch horizon</span><strong>{{ snapshot.scenario.days if snapshot else 90 }} days</strong></div><div class="hero-panel-row"><span>Assessments processed</span><strong>{{ snapshot.completed_count if snapshot else 0 }} / {{ snapshot.expected_count if snapshot else 20 }}</strong></div><div class="mini-stack"><span>01 &nbsp; Find a real business model</span><span>02 &nbsp; Challenge the assumptions</span><span>03 &nbsp; Check the evidence</span></div><p class="caption">{% if snapshot %}{{ snapshot.selected_count }} models selected. {{ snapshot.status|title }} collection.{% else %}The first collection is being prepared.{% endif %}</p></aside></section>
-<section class="section" id="research"><div class="section-heading"><div><span class="eyebrow">The current collection</span><h2>Ideas worth a<br>closer look.</h2></div>{% if snapshot %}<a class="understated-link" href="/runs/{{ snapshot.run_id }}">View all {{ snapshot.selected_count }} models ↗</a>{% endif %}</div>{% if snapshot %}<div class="collection-line"><span>{{ snapshot.title }}</span><span>{{ snapshot.published_at|date }} · {{ snapshot.market }}</span></div><div class="model-grid">{% for model in featured %}{{ model_card(model, snapshot) }}{% endfor %}</div>{% if not featured %}<div class="empty-state"><h3>The collection is taking shape.</h3><p>Discovered models will appear here as their research is saved.</p></div>{% endif %}{{ compare_bar(snapshot) }}{% else %}<div class="empty-state"><span class="empty-symbol">↗</span><h3>The first collection is on its way.</h3><p>Published research will appear here. Each model will include its status, risks and sources.</p></div>{% endif %}</section>
-<section class="section how-section"><div class="section-heading"><div><span class="eyebrow">A simple, transparent process</span><h2>From a promising idea<br>to an informed decision.</h2></div></div><div class="steps"><article><span class="step-number">01</span><h3>Find the model.</h3><p>Start with businesses that exist. Understand the customer, the product and how revenue repeats.</p></article><article><span class="step-number">02</span><h3>Look for the flaws.</h3><p>A critic examines what could prevent a launch, a demand test or the first payment within 90 days.</p></article><article><span class="step-number">03</span><h3>Check the evidence.</h3><p>A separate verifier receives neutral claims and sources. Unresolved questions remain visible.</p></article></div></section>
+<section class="hero">
+  <div class="hero-copy wrap">
+    <h1>A clearer view of<br> what to build.</h1>
+    <p>Explore business models, question the assumptions, and follow the evidence before you launch.</p>
+    <div class="hero-actions"><a class="button" href="{% if snapshot %}/runs/{{ snapshot.run_id }}{% else %}#research{% endif %}">Explore the research <span aria-hidden="true">→</span></a><a class="button button-outline" href="/methodology">How it works</a></div>
+    {% if snapshot %}
+    <ul class="hero-context" aria-label="Research context"><li>{{ snapshot.selected_count }} models selected</li><li>{{ snapshot.scenario.days }}-day launch horizon</li><li>Sources you can inspect</li></ul>
+    <p class="hero-footnote">{{ snapshot.market }} · {{ snapshot.status|title }} collection · Updated {{ snapshot.published_at|date }}</p>
+    <p class="hero-footnote">{{ snapshot.completed_count }} / {{ snapshot.expected_count }} assessments processed. Processing does not mean approval.</p>
+    {% else %}
+    <p class="hero-footnote">The first collection is being prepared.<br> Published research will appear here.</p>
+    {% endif %}
+  </div>
+</section>
+<section class="home-feature section"><div class="wrap"><div class="research-feature">
+  {% if followup %}
+    <h2>A closer look at<br> a specific launch.</h2>
+    <p class="feature-lead">A business model is a starting point. Its launch conditions deserve a closer look.</p>
+    {% include 'public_followup_link.html' %}
+  {% else %}
+    <h2>The evidence behind<br> your next decision.</h2>
+    <ul class="feature-list"><li>Understand the buyer and the revenue model</li><li>See the assumptions, risks and open questions</li><li>Follow each assessment back to its sources</li></ul>
+    <a class="feature-link" href="/methodology">See how the research works <span aria-hidden="true">→</span></a>
+  {% endif %}
+</div></div></section>
+<section class="section home-collection" id="research"><div class="wrap">
+  <div class="section-heading"><div><span class="eyebrow">The current collection</span><h2>Ideas worth a closer look.</h2></div>{% if snapshot %}<a class="understated-link" href="/runs/{{ snapshot.run_id }}">View all {{ snapshot.selected_count }} models <span aria-hidden="true">↗</span></a>{% endif %}</div>
+  {% if snapshot %}
+    <div class="collection-line"><span>{{ snapshot.title }}</span><span>{{ snapshot.published_at|date }} · {{ snapshot.market }}</span></div>
+    <div class="model-grid">{% for model in featured %}{{ model_card(model, snapshot) }}{% endfor %}</div>
+    {% if not featured %}<div class="empty-state"><h3>The collection is taking shape.</h3><p>Discovered models will appear here as their research is saved.</p></div>{% endif %}
+    {{ compare_bar(snapshot) }}
+  {% else %}<div class="empty-state"><span class="empty-symbol">↗</span><h3>The first collection is on its way.</h3><p>Published research will appear here. Each model will include its status, risks and sources.</p></div>{% endif %}
+</div></section>
+<section class="section how-section" id="how"><div class="wrap">
+  <div class="section-heading"><h2>How the research works</h2></div>
+  <div class="steps">
+    <article><span class="step-number">1</span><div><h3>Find the model.</h3><p>Start with businesses that exist. Understand the customer, the product and how revenue repeats.</p></div></article>
+    <article><span class="step-number">2</span><div><h3>Look for the flaws.</h3><p>A critic examines what could prevent a launch, a demand test or the first payment within 90 days.</p></div></article>
+    <article><span class="step-number">3</span><div><h3>Check the evidence.</h3><p>A separate verifier receives neutral claims and sources. Unresolved questions remain visible.</p></div></article>
+  </div>
+</div></section>
 {% endblock %}

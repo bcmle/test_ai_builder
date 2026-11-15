@@ -327,3 +327,8 @@ on HTTPS. The release completed its existing backup/restore and encrypted export
 fetched the homepage and saved collection over HTTPS. The live homepage also opened
 successfully in the Mac browser. P08–P10 are satisfied; the earlier research limitations
 and empty final ranking remain unchanged.
+
+
+## UI redesign — 16.11.2026, отдельная ветка codex/ui-redesign
+
+После утверждения и push [визуальной спецификации](../specs/14-ui-redesign.md) реализован центральный hero, локальный Onest (OFL), чередование секций, единая панель шагов, адаптивная навигация и оформление публичных аналитических страниц. Функциональные контракты и focused analysis сохранены; бизнес-логика и deploy не изменены. [Протокол локальной проверки и скриншоты](ui-redesign/verification.md): 13 tests passed, 2 PostgreSQL tests skipped; основные браузерные сценарии проверены. Это результат в UI-ветке, не утверждение о выпуске на production или полной приёмке всех accessibility-сценариев.
