@@ -169,3 +169,69 @@ def test_both_publications_replay_without_overwriting_later_revision_or_original
             assert path.read_bytes()==final
     asyncio.run(scenario())
 
+
+
+@pytest.mark.skipif(not DSN,reason='Real PostgreSQL requires TEST_DATABASE_URL')
+def test_recovery_source_freezes_three_urls_and_full_parent_artifacts_without_new_search(config,tmp_path):
+    from ai_builder.evidence import ArtifactStore
+    from ai_builder.fetch_transport import FetchError
+    from ai_builder.source_research import SearchQueryPlan
+    from test_pg_ledger import setup
+    from test_source_research import Harness,response
+    async def scenario():
+        await migrate(DSN)
+        async with execution_pool(DSN) as pool:
+            parent,study,_=await setup(pool,config)
+            artifacts=ArtifactStore(tmp_path/'evidence')
+            new=recovery_plan(); old_seed=new.seed.model_copy(update={'scope_id':'old-'+uid(),'variant_id':'old-'+uid()})
+            old_plan=SourceResearchPlan(schema_version='3',seed=old_seed,queries=(SearchQueryPlan(query='old SEC source',max_results=1),),
+                legal_analogues=new.legal_analogues)
+            old=Harness(parent,artifacts,{'old SEC source':[{'url':'https://www.sec.gov/Archives/fixture.htm'}]})
+            async def old_fetch(url):
+                if 'kayak.com' in url: raise FetchError('robots_invalid',url)
+                return response(url)
+            frozen=await old.prepare(old_plan,fetch=old_fetch)
+            old_context={'plan':old_plan.model_dump(mode='json')}
+            async with pool.connection() as conn:
+                await conn.execute('INSERT INTO app.research_contexts(run_id,context_hash,context) VALUES (%s,%s,%s)',
+                                   (parent.run_id,digest(old_context),Jsonb(old_context)))
+                await conn.execute("UPDATE app.runs SET status='partial',active_started_at=NULL WHERE id=%s",(parent.run_id,))
+                await conn.execute('UPDATE app.run_leases SET expires_at=clock_timestamp() WHERE run_id=%s',(parent.run_id,))
+            child,_,_=await setup(pool,config,study=study)
+            new=new.model_copy(update={'recovery_from_run_id':parent.run_id})
+            # This component test isolates acquisition; allowance admission is exercised in the dedicated ledger/create tests.
+            collection,allowance=uid(),uid()
+            async with pool.connection() as conn,conn.transaction():
+                await conn.execute('''INSERT INTO app.collections(id,study_id,coordinator_run_id,context_hash,context,state)
+                    VALUES (%s,%s,%s,%s,%s,'partial')''',(collection,study,parent.run_id,digest({}),Jsonb({})))
+                await conn.execute('''INSERT INTO app.model_budget_families(study_id,model_id,limit_micro,ancestor_run_ids,ancestry_hash)
+                    VALUES (%s,%s,25000000,%s,%s)''',(study,RECOVERY_KAYAK_ID,Jsonb([parent.run_id]),digest([parent.run_id])))
+                await conn.execute('''INSERT INTO app.recovery_allowances(id,study_id,collection_id,limit_micro,model_ids,parent_runs,
+                    baseline_usage,baseline_accounted_micro,"authorization",input_hash,reservation_policy)
+                    VALUES (%s,%s,%s,10000000,%s,%s,'[]',0,'{}','fixture','exact-input-plus4096-1')''',
+                    (allowance,study,collection,Jsonb(list(TARGETS)),Jsonb({RECOVERY_KAYAK_ID:parent.run_id})))
+                await conn.execute('''INSERT INTO app.recovery_runs(run_id,allowance_id,study_id,model_id,parent_run_id,context_hash,config_hash)
+                    VALUES (%s,%s,%s,%s,%s,'fixture',%s)''',
+                    (child.run_id,allowance,study,RECOVERY_KAYAK_ID,parent.run_id,config.digest()))
+            harness=Harness(child,artifacts,{})
+            fetched=[]
+            async def new_fetch(url):
+                fetched.append(url)
+                if url.endswith('/terms-of-use'): raise FetchError('robots_invalid',url)
+                return response(url)
+            result=await harness.prepare(new,fetch=new_fetch)
+            replay=await harness.prepare(new,fetch=new_fetch)
+            assert result==replay and fetched==list(RECOVERY_KAYAK_URLS)
+            assert not harness.search_calls
+            assert frozen.scope.documents[0] in result.scope.documents
+            assert len(result.scope.documents)==3
+            assert result.scope.legal_source_reviews[0]['execution_state']=='completed'
+            assert result.scope.legal_source_reviews[0]['retained_acquisition_run_id']==parent.run_id
+            async with pool.connection() as conn:
+                prior=await (await conn.execute('SELECT packet FROM app.source_research WHERE run_id=%s',(parent.run_id,))).fetchone()
+                assert prior['packet']==frozen.scope.model_dump(mode='json')
+                counts=await (await conn.execute('SELECT count(*) AS n FROM app.source_fetch_attempts WHERE run_id=%s',(child.run_id,))).fetchone()
+                assert counts['n']==3
+                assert not await (await conn.execute('SELECT 1 FROM app.usage WHERE run_id=%s',(child.run_id,))).fetchone()
+            await harness.close();await old.close()
+    asyncio.run(scenario())
