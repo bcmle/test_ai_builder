@@ -207,7 +207,9 @@ while (( SECONDS-started < max_seconds )); do
   if (( attempt == 1 || attempt%5 == 0 )); then
     log "Waiting: db_busy=${rows[0]} reserved=$reserved unknown=$unknown provider_running=$providers source_running_or_unknown=$source_reads prepared=$prepared."
   fi
-  sleep 2
+  # Receipt/checkpoint transitions can be shorter than a second. Sample often
+  # enough to catch a quiet boundary while keeping each STOP window bounded.
+  sleep 0.25
 done
 log 'No quiet boundary within the time limit. Research is running; no interrupt was sent.'
 exit 3
