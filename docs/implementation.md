@@ -332,3 +332,92 @@ and empty final ranking remain unchanged.
 ## UI redesign — 16.11.2026, отдельная ветка codex/ui-redesign
 
 После утверждения и push [визуальной спецификации](../specs/14-ui-redesign.md) реализован центральный hero, локальный Onest (OFL), чередование секций, единая панель шагов, адаптивная навигация и оформление публичных аналитических страниц. Функциональные контракты и focused analysis сохранены; бизнес-логика и deploy не изменены. [Протокол локальной проверки и скриншоты](ui-redesign/verification.md): 13 tests passed, 2 PostgreSQL tests skipped; основные браузерные сценарии проверены. Это результат в UI-ветке, не утверждение о выпуске на production или полной приёмке всех accessibility-сценариев.
+## Milestone 8 — bounded output recovery and focused research (v1.4)
+
+Specs were committed before code in 9202807 and a3b7cb6; high-reasoning response
+waiting was specified in b345b08 before its implementation. PR #5 merged as
+7d33b6d5fd5bc3416a8ceaa229e91399d39b863f. Release 43772982947 passed 274 Linux tests
+and deployed digest sha256:1fcfd47b7fdead96f6f4e8100abc414a2f4e4d87a2f8392a72648d16dae9ed7b.
+The existing deployment verified migration, restart, restore and encrypted export.
+
+All eight prior technical failures were recovered on Aeza with their original
+frozen inputs and paid-response replay. Collection 1d76fe99e56240989cd67794b7143dce
+is now completed with 20 needs_review results and zero technical failures. The
+saved checkpoints for all eight were at research, before its successful return.
+No search was repeated: Tavily remains 92 physical requests. OpenAI increased
+from 23 to 37 settled requests; total calculated study spending is approximately
+$8.1105, versus $6.6779 before recovery. No reserved/unknown usage remained at this
+checkpoint. These are ledger calculations using saved tariff versions, not a
+provider invoice. Recovery does not claim that business criteria passed.
+
+The separate Texas/Austin Helpdesk follow-up uses an expanded primary-source plan
+and high-reasoning Astra settings. Its first source packet contained 16 full
+documents but exceeded the conservative analytical input bound. It stopped before
+any LLM charge. Specs de85953 and implementation 3e1eb87 introduced an explicit
+immutable primary-source revision without repeating search or document reads.
+Release 43774874226 passed 275 Linux tests and deployed digest
+sha256:ce30cc3e718f01e250bd8759b079ea238a980784e74eeda808a905a5485b21b8.
+
+Focused revision ad86837ffce54340a724ce864ee7aeeb retained ten complete primary
+documents and completed both research and independent applicability assessment.
+Eight mandatory criteria passed; F01 and F03 remained unknown because specific
+industry/payment-role applicability was insufficiently documented. Its separate
+public card preserves these reasons and does not show an unperformed Critic,
+Verifier or score. Calculated Astra cost was approximately $1.4859 in two settled
+requests; the original eight focused searches remain separately accounted.
+
+Specs 08e2b46 preceded implementation 7ab3248 of one evidence-supplement revision:
+retain all ten documents, add at most five targeted primary URLs, run a new metered
+analysis in the same study and preserve earlier results. No criteria or scenario
+are weakened. Local validation: 275 passed, two Linux-only checks deferred to CI.
+The implementation includes UI merge 5f7112c from the separate user-owned UI chat.
+Release 43776907329 passed 277 Linux tests and deployed digest
+sha256:3e0fb4f9773a2afde07210e13730d8a092b257857ca8f278e454a88bdb3576f5.
+The completed supplemental research is recorded below; full ranked-model acceptance is not met.
+
+### Supplemental analysis — completed with unresolved criteria, 16 November 2026
+
+Run `f8f687e606b14deda58b7a52d9d8b1f7` retained all ten complete parent documents
+and acquired four additional primary documents. Research and independent
+applicability passed all ten mandatory filters, and Critic completed. The first
+neutrality check requested neutral wording for two claims. The repair request
+was blocked before transmission by the old UTF-8 byte upper bound; Verifier had
+not run. This was a transport sizing stop, not a failed business criterion.
+
+Specs `34f0c39` preceded implementation `9977be51` of exact input-token preflight
+for requests exceeding the conservative byte bound. Release
+[43779066641](https://github.com/bcmle/test_ai_builder/actions/runs/43779066641)
+succeeded with 283 Linux tests and deployed digest
+`sha256:040a15498874a35bbde1011adac3dcca0333123e0ed18ee6eb71b6bb5c1aed62`.
+The unchanged generation payload is admitted only when the provider count plus
+the specified margin fits the saved input limit. Pricing and monetary caps
+remain unchanged; count requests have separate operational audit and no claimed
+confirmed-zero cost.
+
+The same paused run resumed with a saved count of 60,827 input tokens. The four
+previously paid stages were not repeated. Repair completed, the second neutrality
+check accepted the wording, and Verifier assessed 12 selected claims: nine facts
+were supported and three judgments were marked not_fact_checkable. The published
+result contains 19 claim passports, 14 source documents and five risks. Saved
+Verifier input audit confirmed the allowlisted top-level fields without Critic
+verdict or score fields.
+
+The independent post-Critic applicability check returned F01 and F03 to unknown;
+the other eight criteria passed. F03 still lacks the primary Texas Finance Code
+Chapter 152 provisions referenced by regulator guidance, particularly §§152.003,
+152.004 and 152.101. F01 retains unverified premises/private-permission, operator
+work-eligibility and registration assumptions, plus the unresolved licensing
+applicability. No applicable prohibition was established. The graph completed
+with needs_review and the gate correctly omitted factors, a score and a 90-day
+test plan. Technical stops are fixed; P16, the full ranked-model acceptance,
+remains unmet.
+
+The separate [published Helpdesk analysis](https://ai-builder-lab.com/runs/f8f687e606b14deda58b7a52d9d8b1f7/models/ae008373040d411c9e922e38082e8f13)
+shows those unresolved questions and the completed agent evidence. The original
+twenty-model collection and previous results remain intact. This run has eight
+settled generation calls, 316,887 input and 43,202 output tokens, and a calculated
+cost of $5.3330. The whole study totals $15.0573 across 147 physical generation
+and search requests, with no unsettled usage. One input-count operation is
+recorded separately with cost not reported. These are saved-tariff ledger
+calculations, not a confirmed provider invoice or a claim that the model is
+ready for the final ranking.
