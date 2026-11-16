@@ -36,7 +36,7 @@ function slide(i,bg=C.paper){
 }
 function folio(s,i,dark=false,label='AI BUILDER'){
  text(s,label,64,673,1050,25,15,dark?C.lightMuted:C.muted,false,label.startsWith('ai-builder-lab.com')?(i===4?compare:site):null);
- text(s,String(i+1).padStart(2,'0'),1174,670,50,29,19,dark?C.lime:C.ink,true);
+ text(s,`${i+1}/7`,1162,670,62,29,19,dark?C.lime:C.ink,true);
 }
 function kicker(s,t){const q=text(s,t,64,40,1120,30,16,C.ink);q.text.style={fontFamily:'Courier New',fontSize:16,color:C.ink,insets:0,verticalAlignment:'top'};}
 function rect(s,x,y,w,h,fill){return s.shapes.add({geometry:'rect',position:{left:x,top:y,width:w,height:h},fill,line:{fill:'none',width:0}});}
@@ -52,7 +52,7 @@ function table(s,vals,x,y,width,height,widths){
   t.rows[r].height=height/vals.length;
   for(let c=0;c<vals[0].length;c++){
    const q=t.getCell(r,c);q.fill=r===0?C.amber:r===1?C.green:C.paper;
-   q.text.style={fontFamily:font,fontSize:r===1&&c>0?35:r===0?24:26,color:r===0?C.white:C.ink,bold:r===0||r===1};
+   q.text.style={fontFamily:font,fontSize:r===1&&c>0?29:r===0?20:23,color:r===0?C.white:C.ink,bold:r===0||r===1};
   }
  }
  return t;
@@ -125,10 +125,10 @@ folio(s,3);
 s=slide(4);
 kicker(s,'ИНСТРУМЕНТ ДЛЯ СОБСТВЕННИКА');
 text(s,'Карточка — главный результат',64,88,1152,78,52,C.ink,true);
-text(s,'3 рядом → за 2 минуты выбрать, что запускать',64,212,810,36,25,C.ink,true);
-text(s,'Единая структура: клиент, выручка, сроки, бюджет, риски, источники',64,290,1152,30,21,C.muted);
-await image(s,'compare-results.png',942,175,274,139);
-table(s,[['Параметр','Электронное подписание\nАналог: Docusign','Туристические рефералы\nАналог: KAYAK'],['Оценка / 100','56,25–66,25','62,5–72,5'],['До первой оплаты','43–91 день','45–110 дней'],['Бюджет теста','$4 000–12 000','$4 600–9 700']],64,326,1152,292,[330,411,411]);
+text(s,'3 рядом → за 2 минуты\nвыбрать, что запускать',64,201,565,86,29,C.ink,true);
+text(s,'Единая структура: клиент, выручка,\nсроки, бюджет, риски, источники',64,313,565,68,24,C.muted);
+await image(s,'compare-results.png',664,174,552,235);
+table(s,[['Параметр','Электронное подписание\nАналог: Docusign','Туристические рефералы\nАналог: KAYAK'],['Оценка / 100','56,25–66,25','62,5–72,5'],['До первой оплаты','43–91 день','45–110 дней'],['Бюджет теста','$4 000–12 000','$4 600–9 700']],64,426,1152,192,[330,411,411]);
 rect(s,64,628,1152,38,C.amber);
 text(s,'Оценки условные. У обеих моделей открыты F01 и F03.',76,634,1120,30,22,C.ink);
 folio(s,4,false,'ai-builder-lab.com/compare • До 3 моделей одной версии исследования');
