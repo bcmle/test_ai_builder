@@ -116,16 +116,16 @@ kicker(s,'ИНСТРУМЕНТ ДЛЯ СОБСТВЕННИКА');
 text(s,'Карточка — главный результат',64,88,1152,78,52,C.ink,true);
 text(s,'3 рядом → за 2 минуты выбрать, что запускать',64,166,1152,38,26,C.ink,true);
 await image(s,'compare-results.png',64,214,760,427.5);
-text(s,'Единая структура: клиент,\nвыручка, сроки, бюджет,\nриски и источники',856,219,360,99,24,C.muted);
-const comparisonTable=s.tables.add({rows:2,columns:1,left:856,top:336,width:360,height:266,columnWidths:[360],values:[
- ['Электронное подписание · Docusign\n56,25–66,25 / 100\n43–91 день · $4 000–12 000'],
- ['Туристические рефералы · KAYAK\n62,5–72,5 / 100\n45–110 дней · $4 600–9 700']
+text(s,'Единая структура: клиент, выручка,\nсроки, бюджет, риски и источники',856,219,360,62,20,C.muted);
+const comparisonTable=s.tables.add({rows:2,columns:1,left:856,top:290,width:360,height:324,columnWidths:[360],values:[
+ ['Электронное подписание\nАналог: Docusign\nОценка: 56,25–66,25 / 100\nПодготовка: 28–49 дней\nДо первой оплаты: 43–91 день\nБюджет: $4 000–12 000'],
+ ['Туристические рефералы\nАналог: KAYAK\nОценка: 62,5–72,5 / 100\nПодготовка: 25–50 дней\nДо первой оплаты: 45–110 дней\nБюджет: $4 600–9 700']
 ]});
 comparisonTable.borders.assign({fill:C.paper,width:0});
 for(let r=0;r<2;r++){
- comparisonTable.rows[r].height=133;
+ comparisonTable.rows[r].height=162;
  const cell=comparisonTable.getCell(r,0);cell.fill=r===0?C.amber:C.green;
- cell.text.style={fontFamily:font,fontSize:22,color:C.ink};
+ cell.text.style={fontFamily:font,fontSize:20,color:C.ink};
 }
 text(s,'Оценки условные. F01 и F03 открыты.',856,617,360,44,18,C.ink);
 folio(s,4,false,'ai-builder-lab.com/compare • До 3 моделей одной версии исследования');
