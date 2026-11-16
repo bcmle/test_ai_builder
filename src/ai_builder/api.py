@@ -63,6 +63,11 @@ def _ceo_summary(model):
         next_step = dict(text=_literal_excerpt(text, 18, 1), href=f'#claim-{cid}')
         break
     factors = {factor['id']: factor for factor in model['factors']}
+    factor_names = dict(FACTORS)
+    if model.get('scoring_policy_version') == '1.5.3':
+        factor_names.update(S03='Time to prepare the minimum test',
+                            S04='Cycle from ready offer to first payment',
+                            S05='Fit with resources and dependencies')
     missing = sum(not factors.get(fid, {}).get('value') for fid in FACTORS)
     required = [criterion for criterion in model['criteria']
                 if not model.get('scoring_policy_version') or criterion['id'] not in CONDITIONAL_CRITERIA]
@@ -85,7 +90,7 @@ def _ceo_summary(model):
                 risks=risks, next_step=next_step, score_reason=reason,
                 factors=[dict(id=fid, name=factors.get(fid, {}).get('name') or name,
                              **{key: factors.get(fid, {}).get(key)
-                             for key in ('value', 'claim_ids')}) for fid, name in FACTORS.items()])
+                             for key in ('value', 'claim_ids')}) for fid, name in factor_names.items()])
 
 
 async def check_database(pool):
@@ -261,7 +266,8 @@ def create_app(data_dir=None, config_path=None, *, database_url=None, technical_
                 or identifier in snapshot['retained_assessments'] for identifier in identifiers):
             return page('public_error.html', status_code=409, snapshot=snapshot,
                         message='Compare completed updates from this revision. Retained assessments keep their original policy and are outside this comparison.')
-        return page('public_compare.html', snapshot=snapshot, models=selected)
+        return page('public_compare.html', snapshot=snapshot, models=selected,
+                    briefs={model['id']: _ceo_summary(model) for model in selected})
 
     @app.api_route('/methodology', methods=['GET', 'HEAD'], response_class=HTMLResponse)
     async def methodology():

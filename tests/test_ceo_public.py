@@ -98,6 +98,69 @@ def test_unscored_brief_keeps_unknowns_and_legal_conditions_visible(config, tmp_
         assert 'Reviewing documents' not in brief
 
 
+@pytest.mark.parametrize('policy', ['1.5.2', '1.5.3'])
+def test_three_model_comparison_reuses_brief_and_keeps_full_analysis_linked(config, tmp_path, policy):
+    from test_factor_revision_public import replace_selected, revision_catalog
+
+    if policy == '1.5.3':
+        _, value = revision_catalog(config, tmp_path)
+        models = [replace_selected(value, config, index) for index in range(3)]
+        models[0]['factors'][0]['name'] = 'Saved customer access label'
+    else:
+        models = [public_model(conditional_result(), metadata(f'model-{i}'), config) for i in range(3)]
+        value = {**snapshot(models), 'scoring_policy_version': policy}
+    for model in models:
+        model['summary'] = 'A supplied description with many operational details. ' * 25
+        model['limitations'] = ['FULL LIMITATION REMAINS IN THE CARD. ' * 30]
+        model['eligibility_conditions'][0]['assumption'] = 'FULL LEGAL ASSUMPTION. ' * 30
+        model['eligibility_conditions'][0]['required_check'] = 'FULL REQUIRED LEGAL CHECK. ' * 30
+        judgment = deepcopy(next(claim for claim in model['claims'] if claim['kind'] == 'judgment'))
+        judgment.update(id='risk-judgment', text='Differentiation may delay payment. FULL RISK REASONING. ' * 20)
+        model['claims'].append(judgment)
+        model['risks'] = [dict(id=f'risk-{i}', text='LONG FACT INTRODUCTION ' * 30 + judgment['text'],
+                              verification=None, claim_ids=['risk-judgment']) for i in range(5)]
+    publish_snapshot(tmp_path, value)
+    before = load_snapshot(tmp_path)
+    with TestClient(create_app(data_dir=tmp_path, database_url='')) as client:
+        response = client.get(f"/compare?run={value['run_id']}&revision={value['revision_id']}&models=model-0,model-1,model-2")
+        assert response.status_code == 200
+        html = response.text
+        for full_text in ('FULL LIMITATION', 'FULL LEGAL ASSUMPTION', 'FULL REQUIRED LEGAL CHECK',
+                          'LONG FACT INTRODUCTION', 'FULL RISK REASONING'):
+            assert full_text not in html
+        assert html.count('Differentiation may delay payment.') == 9
+        assert html.count('1 open checks: Lawful activity') == 3
+        assert html.count('Conditional assessment') == 3
+        assert '#full-analysis' in html and '#conditions' in html and '#legal-reviews' in html
+        assert '#claim-risk-judgment' in html and '#sources' in html
+        if policy == '1.5.3':
+            assert 'Cycle from ready offer to first payment' in html
+            assert 'Saved customer access label' in html
+            assert 'Time to launch a test' not in html
+        class Columns(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.columns = ['', '', '']
+                self.column = 0
+                self.inside = False
+            def handle_starttag(self, tag, attrs):
+                if tag == 'tr': self.column = 0
+                if tag == 'td': self.inside = True
+            def handle_endtag(self, tag):
+                if tag == 'td':
+                    self.inside = False
+                    self.column += 1
+            def handle_data(self, text):
+                if self.inside: self.columns[self.column] += ' ' + text
+        parser = Columns()
+        parser.feed(html)
+        assert all(len(column.split()) <= 250 for column in parser.columns)
+        linked = client.get(f"/models/model-0?run={value['run_id']}").text
+        assert 'FULL LIMITATION' in linked and 'FULL REQUIRED LEGAL CHECK' in linked
+        assert 'id="claim-risk-judgment"' in linked
+        assert client.get(f"/runs/{value['run_id']}?format=json").json() == before
+
+
 @pytest.mark.skipif(shutil.which('node') is None, reason='JavaScript runtime is not installed')
 def test_hash_navigation_reveals_nested_disclosures_on_load_click_and_history():
     script = Path('src/ai_builder/static/public.js').read_text()
