@@ -117,6 +117,31 @@ async def check_database(pool):
     return len(expected)
 
 
+def _display_rankings(snapshot):
+    """Derive versioned display places without rewriting stored assessment ranks."""
+    current = [m for m in snapshot['models'] if m['id'] not in snapshot.get('retained_assessments', {})]
+    versioned = bool(snapshot.get('scoring_policy_version'))
+    rankings = {category: {} for category in ('final', 'conditional')}
+    for category, groups in rankings.items():
+        for goal in GOALS:
+            candidates = [m for m in current if m.get('score') and m['score']['status'] == category
+                          and m['score']['goal_feasibility'] == goal
+                          and (m['eligible_for_ranking'] and m['score']['value'] is not None
+                               if versioned else m['rank'] is not None)]
+            if not versioned:
+                groups[goal] = sorted(candidates, key=lambda m: (m['rank'], m['title'], m['id']))
+                continue
+            groups[goal] = []
+            previous, place = None, 0
+            ordered = sorted(candidates, key=lambda m: (m['score']['value'], m['title'].casefold(), m['id']))
+            for index, model in enumerate(ordered, 1):
+                if model['score']['value'] != previous:
+                    place = index
+                groups[goal].append({**model, 'rank': place})
+                previous = model['score']['value']
+    return rankings
+
+
 def create_app(data_dir=None, config_path=None, *, database_url=None, technical_preview=None):
     data = Path(data_dir or os.environ.get('AI_BUILDER_DATA', 'data'))
     config = Path(config_path or os.environ.get('AI_BUILDER_CONFIG', 'config/baseline.json'))
@@ -198,12 +223,9 @@ def create_app(data_dir=None, config_path=None, *, database_url=None, technical_
                   and (status not in {*STATUS_LABELS, 'not_selected'} or visible_status(m) == status)
                   and (not category or m['category'] == category)]
         current_models = [m for m in snapshot['models'] if m['id'] not in snapshot.get('retained_assessments', {})]
-        ranking = {goal: sorted((m for m in current_models if m['rank'] is not None and m['score']['status'] == 'final' and
-                                 m['score']['goal_feasibility'] == goal), key=lambda m: (m['rank'], m['title'], m['id']))
-                   for goal in GOALS}
-        conditional_ranking = {goal: sorted((m for m in current_models if m['rank'] is not None and
-                                 m['score']['status'] == 'conditional' and m['score']['goal_feasibility'] == goal),
-                                 key=lambda m: (m['rank'], m['title'], m['id'])) for goal in GOALS}
+        display_rankings = _display_rankings(snapshot)
+        ranking = display_rankings['final']
+        conditional_ranking = display_rankings['conditional']
         counts = {status: sum(m['status'] == status for m in current_models)
                   for status in ('pass', 'fail', 'needs_review', 'confirmed', 'conditional', 'blocked', 'unresolved')}
         counts['unfinished'] = (sum(state != 'completed' for state in snapshot['update_states'].values())
