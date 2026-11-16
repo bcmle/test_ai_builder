@@ -6,7 +6,7 @@ umask 077
 
 target_name=${QUIESCE_CONTAINER:-ai-builder-reassessment-v152}
 case "$target_name" in
-  ai-builder-reassessment-v152|ai-builder-reassessment-v152-repair1) ;;
+  ai-builder-reassessment-v152|ai-builder-reassessment-v152-repair1|ai-builder-reassessment-v152-repair2) ;;
   *) echo 'Refusing an unrecognized research container name.' >&2; exit 2 ;;
 esac
 expected_parent=1d76fe99e56240989cd67794b7143dce

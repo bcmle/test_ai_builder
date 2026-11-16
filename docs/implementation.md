@@ -506,3 +506,21 @@ Its PostgreSQL regression replays three already paid repair responses with the
 same packet bodies, operation keys and correction diagnostics; genuine role
 changes remain rejected while the presentation-only candidate is accepted.
 Only the required neutrality recheck and verifier are then newly billed.
+
+The proposed correction was tested against production's saved responses in a
+temporary container with a read-only source overlay and a read-only database
+transaction, without provider credentials or calls. Docusign's last candidate
+passed with all 48 source units covered. Zuora's first two saved candidates each
+had one remaining presentation mismatch: the explicitly proposed demand test's
+standalone `Success:` heading became `Proposed success criteria:`. Its later
+candidate instead removed `success` and must remain rejected. The unchanged
+threshold requires two actual pilot payments, accepted invoice outputs without
+unresolved material errors, and at least one paid renewal by day 90; interest
+and unpaid commitments do not count. Spec `4f87864` permits only the directional,
+source-bound heading clarification, preserving all criteria and stop conditions.
+
+The combined correction passed 454 local tests with one expected macOS-only
+skip. Independent review and PostgreSQL replay tests confirm that the earlier
+paid success-clarification response is reused without a new repair charge, while
+the saved later response that removed `success` still rejects. Frozen packets,
+source generation, operation keys and existing diagnostics remain unchanged.

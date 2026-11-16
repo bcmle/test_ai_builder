@@ -286,3 +286,72 @@ def test_leading_connector_exception_requires_same_origin_adjacent_omitted_autho
         projection.coverage[1].retained_excerpt = projection.rewrites[0].neutral_text
     with pytest.raises(ValueError):
         validate_factor_projection(projection,originals,sources)
+
+
+ZUORA_TEST_PLAN = (
+    'Proposed 90-day demand test, not a forecast. '
+    'Seek 2 unrelated paying pilots by day 60 and renewals during days 61-90. '
+    'Success: 2 actual pilot payments, accepted invoice outputs without unresolved material errors, '
+    'and at least 1 paid renewal by day 90. Interest and unpaid commitments do not count. '
+    'Stop the assumed paid-launch role upon an identified prohibition or required own special licence; '
+    'never onboard while either eligibility check remains unresolved. '
+    'Unresolved checks at day 60 constitute an eligibility/timing failure, not buyer rejection. '
+    'Fewer than 8 interviews after 40 contacts triggers channel revision before further product spending.'
+)
+
+
+def test_saved_zuora_success_label_can_be_clarified_with_all_thresholds_and_stop_conditions_intact():
+    revised = ZUORA_TEST_PLAN.replace('Success:', 'Proposed success criteria:')
+    assert _projection_case(ZUORA_TEST_PLAN,revised)[0].neutral_text == revised
+
+
+@pytest.mark.parametrize('defect', ['delete_success','reverse_proposal','remove_plan_proposal',
+    'no_proposed_test','later_proposed_test','inline_success','nested_label','threshold','deadline','stop_condition','punctuation'])
+def test_success_label_clarification_is_source_bound_directional_and_preserves_test_semantics(defect):
+    original = ZUORA_TEST_PLAN
+    revised = original.replace('Success:','Proposed success criteria:')
+    if defect=='delete_success':
+        revised = original.replace('Success:','')
+    elif defect=='reverse_proposal':
+        original,revised = revised,original
+    elif defect=='remove_plan_proposal':
+        revised = revised.removeprefix('Proposed ')
+    elif defect=='no_proposed_test':
+        original = original.removeprefix('Proposed ')
+        revised = revised.removeprefix('Proposed ')
+    elif defect=='later_proposed_test':
+        prefix = 'Proposed 90-day demand test, not a forecast. '
+        original = original.removeprefix(prefix) + ' ' + prefix
+        revised = revised.removeprefix(prefix) + ' ' + prefix
+    elif defect=='inline_success':
+        original = original.replace('Success:', 'Customer success:')
+        revised = revised.replace('Proposed success criteria:', 'Customer proposed success criteria:')
+    elif defect=='nested_label':
+        original = original.replace('Success:', 'Customer: Success:')
+        revised = revised.replace('Proposed success criteria:', 'Customer: Proposed success criteria:')
+    elif defect=='threshold':
+        revised = revised.replace('2 actual pilot payments','3 actual pilot payments')
+    elif defect=='deadline':
+        revised = revised.replace('renewal by day 90','renewal by day 91')
+    elif defect=='stop_condition':
+        revised = revised.replace('never onboard while either eligibility check remains unresolved',
+                                  'onboard while either eligibility check remains unresolved')
+    elif defect=='punctuation':
+        revised = revised.replace('days 61-90. Proposed', 'days 61-90, Proposed')
+    with pytest.raises(ValueError,match='dependency|modality|premise'):
+        _projection_case(original,revised)
+
+
+def test_success_label_cannot_borrow_proposed_test_scope_from_another_source_unit():
+    from ai_builder.domain import Claim,HandoffClaim,FactorNeutralProjection,factor_projection_sources,validate_factor_projection
+    from test_pipeline import claim
+    original = Claim.model_validate({**claim('test','judgment'),'neutral_text':'Proposed 90-day demand test, not a forecast.',
+                                    'assumptions':['Success: 2 actual pilot payments by day 90.']})
+    handoff = HandoffClaim.model_validate(original.model_dump(include=set(HandoffClaim.model_fields)))
+    sources = factor_projection_sources([original],[])
+    revised = original.neutral_text + ' Proposed success criteria: 2 actual pilot payments by day 90.'
+    projection = FactorNeutralProjection.model_validate(dict(rewrites=[dict(claim_id='test',neutral_text=revised)],
+        coverage=[dict(source_id=source['source_id'],disposition='retained',target_claim_id='test',
+                       retained_excerpt=source['source_excerpt'].replace('Success:','Proposed success criteria:')) for source in sources]))
+    with pytest.raises(ValueError,match='dependency|modality'):
+        validate_factor_projection(projection,[handoff],sources)

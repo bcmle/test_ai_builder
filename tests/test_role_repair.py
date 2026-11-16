@@ -98,8 +98,9 @@ def test_factor_neutral_projection_resumes_cached_rejection_and_crash_without_re
     asyncio.run(scenario())
 
 
-def test_saved_three_projection_candidates_replay_with_identical_packets_and_no_new_repair_charge(monkeypatch):
-    """Reproduce the old heading rejection, then recover the third paid candidate."""
+@pytest.mark.parametrize('presentation',['heading','success_label'])
+def test_saved_three_projection_candidates_replay_with_identical_packets_and_no_new_repair_charge(monkeypatch,presentation):
+    """Recover an acceptable paid candidate while retaining genuinely bad ones."""
     from collections import Counter
     from pathlib import Path
     import re
@@ -119,16 +120,26 @@ def test_saved_three_projection_candidates_replay_with_identical_packets_and_no_
         async def generate(self,role,request,schema,key):
             result = await super().generate(role,request,schema,key)
             if role=='factors':
-                result.claims[0].assumptions[-1] = 'Record outreach routes and responses. ' + result.claims[0].assumptions[-1]
+                if presentation=='heading':
+                    result.claims[0].assumptions[-1] = 'Record outreach routes and responses. ' + result.claims[0].assumptions[-1]
+                else:
+                    result.claims[0].assumptions.append(
+                        'Proposed 90-day demand test, not a forecast. Success: 2 actual pilot payments '
+                        'and 1 paid renewal by day 90. Stop the paid launch upon a required own licence.')
                 self.saved_factors = result.model_dump(mode='json')
-            if role=='repair' and request.get('output_correction',{}).get('attempt',0)<2:
-                # The first two candidates contain genuine drift and must stay
-                # rejected after the presentation-only validator correction.
+            if role=='repair':
+                attempt = request.get('output_correction',{}).get('attempt',0)
+                if presentation=='heading':
+                    before,after = ('external partner','external supplier') if attempt<2 else ('external partner','external partner')
+                else:
+                    # Early saved replies clarify the label; the final reply
+                    # deletes success and must remain rejected after the fix.
+                    before,after = 'Success:', 'Proposed success criteria:' if attempt<2 else ''
                 for rewrite in result['rewrites']:
-                    rewrite['neutral_text'] = rewrite['neutral_text'].replace('external partner','external supplier')
+                    rewrite['neutral_text'] = rewrite['neutral_text'].replace(before,after)
                 for item in result['coverage']:
                     if item['retained_excerpt']:
-                        item['retained_excerpt'] = item['retained_excerpt'].replace('external partner','external supplier')
+                        item['retained_excerpt'] = item['retained_excerpt'].replace(before,after)
             return result
 
     async def scenario():
@@ -153,7 +164,10 @@ def test_saved_three_projection_candidates_replay_with_identical_packets_and_no_
                     {role:dict(reasoning_effort='low',max_output_tokens=4096) for role in PROMPTS},
                     purpose='eval',client=client,prompt_prefix=prefix,prompts=prompts)
                 with monkeypatch.context() as old_runtime:
-                    old_runtime.setattr(domain,'_PRESENTATION',old_presentation)
+                    if presentation=='heading':
+                        old_runtime.setattr(domain,'_PRESENTATION',old_presentation)
+                    else:
+                        old_runtime.setattr(domain,'_proposed_success_label_variant',lambda text:text)
                     with pytest.raises(ValueError,match='Neutral repair changed an operational dependency, number, time, negation or modality'):
                         await execute_scope(ledger,config,scope,roles)
                 baseline = Counter(paid)
@@ -164,6 +178,15 @@ def test_saved_three_projection_candidates_replay_with_identical_packets_and_no_
                     saved_inputs = await (await conn.execute("SELECT payload FROM app.events WHERE run_id=%s AND kind='role_input' AND payload->>'role'='repair' ORDER BY id",(ledger.run_id,))).fetchall()
                     saved_responses = await (await conn.execute("SELECT operation_key,response FROM app.provider_operations WHERE run_id=%s AND operation_key LIKE %s ORDER BY operation_key",(ledger.run_id,'%:repair:%'))).fetchall()
                 assert len(saved_inputs)==len(saved_responses)==3
+                if presentation=='success_label':
+                    late = saved_inputs[2]['payload']
+                    response = next(row['response'] for row in saved_responses if row['operation_key']==late['operation_key'])
+                    candidate = json.loads(''.join(content['text'] for item in response['output'] for content in item.get('content',[])
+                                                   if content.get('type')=='output_text'))
+                    with pytest.raises(ValueError,match='dependency|modality'):
+                        domain.validate_factor_projection(domain.FactorNeutralProjection.model_validate(candidate),
+                            [domain.HandoffClaim.model_validate(value) for value in late['input']['claims']],
+                            late['input']['source_units'])
                 async with ledger.locked(ledger.run_id,fenced=True) as (conn,_,__):
                     await conn.execute("UPDATE app.runs SET status='running',control_version=control_version+1 WHERE id=%s",(ledger.run_id,))
                     await ledger.event(conn,ledger.run_id,'explicit_test_recovery',{'policy':'factor-neutral-projection-repair-1'})
@@ -176,7 +199,8 @@ def test_saved_three_projection_candidates_replay_with_identical_packets_and_no_
                 async with pool.connection() as conn:
                     all_inputs = await (await conn.execute("SELECT payload FROM app.events WHERE run_id=%s AND kind='role_input' AND payload->>'role'='repair' ORDER BY id",(ledger.run_id,))).fetchall()
                     retained_responses = await (await conn.execute("SELECT operation_key,response FROM app.provider_operations WHERE run_id=%s AND operation_key LIKE %s ORDER BY operation_key",(ledger.run_id,'%:repair:%'))).fetchall()
-                assert all_inputs==saved_inputs+saved_inputs  # Includes keys, correction errors, source units and frozen packets.
+                replayed = saved_inputs if presentation=='heading' else saved_inputs[:1]
+                assert all_inputs==saved_inputs+replayed  # Includes keys, correction errors, source units and frozen packets.
                 assert retained_responses==saved_responses
                 assert (await execute_scope(ledger,config,scope,roles,resume=True))['card']==state['card']
                 assert await ledger.summary(ledger.run_id)==after

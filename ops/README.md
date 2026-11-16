@@ -3,7 +3,8 @@
 `quiesce-reassessment.sh` is a narrowly scoped operator helper for the running
 `ai-builder-reassessment-v152` Python container. The explicitly named recovery
 container can be selected with
-`QUIESCE_CONTAINER=ai-builder-reassessment-v152-repair1`; all other names are
+`QUIESCE_CONTAINER=ai-builder-reassessment-v152-repair1` or
+`QUIESCE_CONTAINER=ai-builder-reassessment-v152-repair2`; all other names are
 rejected. It does not alter the deployment bundle, database, immutable research
 inputs or budgets.
 

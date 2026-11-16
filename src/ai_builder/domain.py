@@ -316,6 +316,17 @@ def _content_tokens(text):
     return [token for token,_,__ in _operational_tokens(text)]
 
 
+def _proposed_success_label_variant(text):
+    """Forward clarification of a standalone heading inside this proposed test."""
+    heading = re.match(r'^\s*(?:the\s+)?proposed\s+(?:\d+[-– ]day\s+)?(?:demand\s+)?test'
+                       r'(?:,\s*not\s+a\s+forecast)?\s*[.:]', text, re.I)
+    if not heading:
+        return text
+    return re.sub(r'(^|(?<=[.\n]))(\s*)Success(?=\s*:)',
+                  lambda match:match.group(1)+match.group(2)+'Proposed success criteria'
+                  if match.start() >= heading.end() else match.group(), text, flags=re.I)
+
+
 def _negative_anchors(text):
     words = [_PROTECTED_ALIASES.get(word.lower(), word.lower()) for word in re.findall(r'[A-Za-z]+', text)]
     material = _PROTECTED_WORDS - _MODAL_TERMS - {'day','week','month','hour'}
@@ -414,6 +425,7 @@ def validate_factor_projection(projection: FactorNeutralProjection, originals: l
                 # Infer only from immutable adjacent spans and actual omission;
                 # keep frozen source-unit fields and repair packet hashes intact.
                 source_variants.append(re.sub(r'^\s*and\s+', '', source_content, flags=re.I))
+        source_variants += [_proposed_success_label_variant(content) for content in tuple(source_variants)]
         if (not required <= target_terms or required & _MODAL_TERMS != target_terms & _MODAL_TERMS
                 or _quantities(source['source_excerpt']) != _quantities(item.retained_excerpt)
                 or _negative_anchors(source['source_excerpt']) != _negative_anchors(item.retained_excerpt)
