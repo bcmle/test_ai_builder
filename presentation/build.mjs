@@ -8,14 +8,14 @@ const out = path.resolve(process.argv[2] || path.join(root, '.build'));
 await fs.mkdir(out, { recursive: true });
 const data = JSON.parse(await fs.readFile(path.join(root, 'data.json'), 'utf8'));
 const p = Presentation.create({ slideSize: { width: 1280, height: 720 } });
-const C = { ink:'#122C26', paper:'#F4F3EC', muted:'#5D7068', green:'#397B63', amber:'#E5CA80', line:'#CCD4C8', white:'#F7F8EF', lime:'#D2EC7A', dark:'#0C211C', lightMuted:'#B5CBBE' };
+const C = { ink:'#F1F6F0', paper:'#0C211C', muted:'#B5CBBE', green:'#8BC6AC', amber:'#36594D', line:'#36594D', white:'#F1F6F0', lime:'#9BD1B7', dark:'#0C211C', lightMuted:'#B5CBBE' };
 const font = 'Arial';
 const site = 'https://ai-builder-lab.com/';
 const compare = `${site}compare?models=23c49394cadf4e0ab3b7f78d9d70373a,03b5d22868b44bbb975d3cfc01d46f93&run=${data.run_id}&revision=${data.revision_id}`;
 const notes = [
   'Я создал и развернул сайт для исследования бизнес-моделей. Он помогает выбрать, какую идею проверить платным тестом за девяносто дней. В каталоге двадцать моделей. Пять получили условные оценки после проверки агентами, пятнадцать требуют дополнительного исследования.',
   'Исследование работает на сервере Aeza: система собирает источники, проверяет обязательные критерии, запускает критика и проверяющего, затем формирует карточку. PostgreSQL хранит состояние, результаты и расходы. Прерванную работу можно продолжить. Сейчас запуск выполняет оператор на сервере, а сайт позволяет просматривать результаты.',
-  'Здесь показаны все двадцать моделей по десяти обязательным факторам. Зелёным отмечено подтверждение, жёлтым — нехватка оснований. Явных отказов в текущих карточках нет. Главные пробелы — законность конкретного запуска и необходимость собственной лицензии. Это открытые вопросы, поэтому система сохраняет их рядом с оценкой, а не скрывает. Одна модель может иметь несколько пробелов.',
+  'Здесь показаны все двадцать моделей по десяти обязательным факторам. Светло-зелёным отмечено подтверждение, тёмно-зелёным — нехватка оснований. Явных отказов в текущих карточках нет. Главные пробелы — законность конкретного запуска и необходимость собственной лицензии. Это открытые вопросы, поэтому система сохраняет их рядом с оценкой, а не скрывает. Одна модель может иметь несколько пробелов.',
   'Критик ищет причины, почему запуск может не состояться. Проверяющий получает нейтральные тезисы и документы без оценок и бизнес-выводов критика. Утверждения связаны с источниками и паспортами. Оба этапа реально выполнены для пяти оценённых моделей. Например, для туристических рефералов остаётся риск, что партнёрское одобрение не удастся получить вовремя.',
   'На сайте можно выбрать до трёх карточек одной версии и сравнить их рядом. Здесь электронное подписание и туристические рефералы. Видны покупатель, выручка, оценка, бюджет и время до оплаты. У рефералов оценка выше, но срок может выйти за девяносто дней. Поэтому решение требует сравнения условий, а не только числа. Из таблицы можно перейти к рискам и источникам. Условная оценка означает завершённый анализ с открытыми условиями запуска.',
   'Половину оценки определяют доступ к покупателям и свидетельства готовности платить. Остальное — подготовка предложения, срок до оплаты и ресурсы. Веса находятся в конфигурации. Все варианты оцениваются для команды из двух человек с бюджетом пятнадцать тысяч долларов без зарплат. Диапазоны отражают неопределённость. Балл не является вероятностью успеха.',
@@ -49,7 +49,7 @@ function table(s,vals,x,y,width,height,widths){
  for(let r=0;r<vals.length;r++){
   t.rows[r].height=height/vals.length;
   for(let c=0;c<vals[0].length;c++){
-   const q=t.getCell(r,c);q.fill=r===0?C.ink:r===1?'#E4EACF':C.paper;
+   const q=t.getCell(r,c);q.fill=r===0?'#173C30':r===1?'#214C3D':C.paper;
    q.text.style={fontFamily:font,fontSize:r===1&&c>0?35:r===0?24:26,color:r===0?C.white:C.ink,bold:r===0||r===1};
   }
  }
@@ -88,7 +88,7 @@ text(s,'20 моделей в каталоге. Явных отказов в те
 const criteria=[...data.criteria].reverse();
 s.charts.add('bar',{
  position:{left:60,top:213,width:1156,height:388},categories:criteria.map(v=>`${v.id}  ${v.label}`),
- series:[{name:'Подтверждено',values:criteria.map(v=>v.passed),fill:C.green,dataLabels:{showValue:true,position:'center',numberFormatCode:'0;-0;;',textStyle:{typeface:font,fontSize:20,bold:true,fill:C.white}}},{name:'Не подтверждено',values:criteria.map(v=>v.unknown),fill:C.amber}],
+ series:[{name:'Подтверждено',values:criteria.map(v=>v.passed),fill:C.green,dataLabels:{showValue:true,position:'center',numberFormatCode:'0;-0;;',textStyle:{typeface:font,fontSize:20,bold:true,fill:C.dark}}},{name:'Не подтверждено',values:criteria.map(v=>v.unknown),fill:C.amber}],
  barOptions:{direction:'bar',grouping:'stacked',gapWidth:76,overlap:100},hasLegend:true,
  legend:{position:'bottom',textStyle:{typeface:font,fontSize:20,fill:C.ink}},
  xAxis:{visible:true,textStyle:{typeface:font,fontSize:20,fill:C.ink},line:{fill:'none',width:0}},
@@ -124,7 +124,7 @@ folio(s,4,false,'ai-builder-lab.com/compare');
 
 s.speakerNotes.text+=`\nСтраница сравнения: ${compare}\nКомпании — аналоги предлагаемых моделей. Сроки и бюджеты — аналитические оценки. В рисках туристических рефералов отмечено возможное ожидание партнёрского одобрения.\nСсылка для демонстрации: ${compare}`;
 
-s=slide(5,C.lime);
+s=slide(5,C.dark);
 kicker(s,'ЛОГИКА ОЦЕНКИ');
 text(s,'Оценка под конкретный запуск',64,88,1150,75,52,C.ink,true);
 text(s,'90',58,213,365,174,152,C.ink,true);
@@ -132,11 +132,11 @@ text(s,'дней до первой оплаты',65,395,390,85,31,C.ink,true);
 text(s,'2 человека\n$15 000 без зарплат\nРынок США',65,502,390,118,26,C.ink);
 const factors=[...data.factors].reverse();
 s.charts.add('bar',{
- position:{left:470,top:217,width:745,height:369},categories:factors.map(v=>v.label),series:[{name:'Вес',values:factors.map(v=>v.weight),fill:C.ink}],
+ position:{left:470,top:217,width:745,height:369},categories:factors.map(v=>v.label),series:[{name:'Вес',values:factors.map(v=>v.weight),fill:C.green}],
  barOptions:{direction:'bar',grouping:'clustered',gapWidth:125},hasLegend:false,
  xAxis:{visible:true,textStyle:{typeface:font,fontSize:22,fill:C.ink},line:{fill:'none',width:0}},
  yAxis:{visible:false,min:0,max:31,majorGridlines:null,line:{fill:'none',width:0}},
- dataLabels:{showValue:true,position:'outEnd',numberFormatCode:'0"%"',textStyle:{typeface:font,fontSize:26,bold:true,fill:C.ink}},chartFill:C.lime,plotAreaFill:C.lime
+ dataLabels:{showValue:true,position:'outEnd',numberFormatCode:'0"%"',textStyle:{typeface:font,fontSize:26,bold:true,fill:C.ink}},chartFill:C.dark,plotAreaFill:C.dark
 });
 text(s,'Веса в конфигурации. Диапазоны сохраняют неопределённость.',470,611,746,56,22,C.ink);
 folio(s,5,false,'Балл не является статистической вероятностью успеха.');
