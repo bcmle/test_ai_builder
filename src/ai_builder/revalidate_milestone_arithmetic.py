@@ -34,6 +34,7 @@ from .store import Conflict, uid
 POLICY = 'milestone-arithmetic-revalidation-1'
 TOTAL = 'factor-time-to-first-payment'
 BLOCKER = 'factor_claim_unresolved:'+TOTAL
+ARITHMETIC_BLOCKERS = {BLOCKER,'factor_claim_unresolved:factor-budget-share'}
 
 
 def response_candidate(response):
@@ -79,12 +80,14 @@ def provider_payload(context, packet):
 
 def recover_state(state, scope, config, candidate, validated_at):
     """Only a whole independently produced result may replace the derived projection."""
-    if (state.get('card',{}).get('publication_blockers')!=[BLOCKER]
+    blockers=state.get('card',{}).get('publication_blockers',[])
+    if (not blockers or not set(blockers)<=ARITHMETIC_BLOCKERS
             or state.get('factor_neutral') is not True
             or state.get('eligibility') not in {'confirmed','conditional'}):
-        raise Conflict('The reserved arithmetic must be the only publication blocker')
+        raise Conflict('Only the two explicitly supported arithmetic checks may block publication')
     factors=FactorsStateV153.model_validate(state['factors'])
-    validate_factor_verification(candidate,factors,market=config.market,milestones=True)
+    validate_factor_verification(candidate,factors,market=config.market,milestones=True,
+                                 business_budget_usd=config.scenario.business_budget_usd)
     statuses={item.claim_id:item.status for item in candidate.items}
     if any(statuses[claim.claim_id] not in ({'supported','not_fact_checkable'}
            if claim.kind=='judgment' else {'supported'}) for claim in factors.claims):
@@ -233,7 +236,8 @@ async def prepare(conn, data_dir, collection_id, model_ids, *, validated_at, rev
                 raise Conflict('Saved verifier operation differs from its exact frozen payload')
             try:
                 candidate=response_candidate(event['response'])
-                validate_factor_verification(candidate,factors,market=config.market,milestones=True)
+                validate_factor_verification(candidate,factors,market=config.market,milestones=True,
+                                             business_budget_usd=config.scenario.business_budget_usd)
             except (ValueError,TypeError,KeyError) as error:
                 failures.append(dict(event_id=event['id'],response_hash=digest(event['response']),error=type(error).__name__))
                 continue

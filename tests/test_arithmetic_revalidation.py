@@ -29,10 +29,11 @@ DSN=os.getenv('TEST_DATABASE_URL')
 pytestmark=pytest.mark.skipif(not DSN,reason='Real PostgreSQL requires TEST_DATABASE_URL')
 
 
-def test_paid_candidate_revalidation_dry_run_apply_and_idempotent_history(monkeypatch,tmp_path):
+@pytest.mark.parametrize('with_budget_share',[False,True])
+def test_paid_candidate_revalidation_dry_run_apply_and_idempotent_history(monkeypatch,tmp_path,with_budget_share):
     import ai_builder.pipeline as pipeline
     current=pipeline.validate_factor_verification
-    def old_validation(result,factors,*,market,milestones=False):
+    def old_validation(result,factors,*,market,milestones=False,business_budget_usd=None):
         current(result,factors,market=market,milestones=False)
     monkeypatch.setattr(pipeline,'validate_factor_verification',old_validation)
     async def scenario():
@@ -57,11 +58,29 @@ def test_paid_candidate_revalidation_dry_run_apply_and_idempotent_history(monkey
                 def version(self): return real_roles.version()
                 async def generate(self,role,request,schema,key):
                     value=await super().generate(role,request,schema,key)
+                    if role=='factors' and with_budget_share:
+                        value['cost']=dict(low=3000,high=9000)
+                        cost=next(c for c in value['claims'] if c['claim_id']=='factor-cost')
+                        cost.update(quantity_estimate=value['cost'],metric='Non-salary cost in USD',
+                            neutral_text='The conditional cost estimate is 3000 to 9000 USD.',
+                            assumptions=['The conditional cost estimate is 3000 to 9000 USD.'])
+                        scenario={**deepcopy(cost),'claim_id':'factor-scenario','quantity_estimate':None,
+                            'metric':'Scenario boundaries','neutral_text':'The scenario budget is 15000 USD.',
+                            'assumptions':['The scenario budget is 15000 USD.']}
+                        share={**deepcopy(scenario),'claim_id':'factor-budget-share','kind':'calculation','method':'calculation',
+                            'quantity_estimate':dict(low=20,high=60),'metric':'Non-salary budget share, percent',
+                            'formula':'100×[3000,9000]/15000=[20,60].','input_claim_ids':['factor-cost','factor-scenario'],
+                            'neutral_text':'The conditional cost represents 20 to 60 percent of the budget.',
+                            'assumptions':[]}
+                        value['claims'].extend([scenario,share])
                     if role=='verifier' and any(c['claim_id']==TOTAL for c in request['claims']):
                         value=value.model_dump(mode='json') if hasattr(value,'model_dump') else value
                         for item in value['items']:
                             if item['claim_id']==TOTAL:
                                 item['status']='not_fact_checkable' if 'output_correction' in request else 'supported'
+                                item['evidence_ids']=[]
+                            elif item['claim_id']=='factor-budget-share':
+                                item['status']='insufficient' if 'output_correction' in request else 'supported'
                                 item['evidence_ids']=[]
                         payload=provider_payload(research,request)
                         request_hash=digest(dict(endpoint='responses',payload=payload,agent='verifier',purpose='eval',pricing=pricing().model_dump(mode='json')))
@@ -72,7 +91,7 @@ def test_paid_candidate_revalidation_dry_run_apply_and_idempotent_history(monkey
                     return value
             roles=PaidFixture()
             state=await execute_scope(ledger,config,scope,roles,inheritance=inheritance)
-            assert state['card']['publication_blockers']==['factor_claim_unresolved:'+TOTAL]
+            assert set(state['card']['publication_blockers'])=={'factor_claim_unresolved:'+TOTAL}|({'factor_claim_unresolved:factor-budget-share'} if with_budget_share else set())
             metadata=dict(id=scope.base_model_id,title='Fixture model',category='Fixture',summary='Fixture scope',buyer='Teams',revenue='Subscription',comparable='Fixture')
             original=public_model(ResearchRunResult(ledger.run_id,PreparedScope(scope,()),state,{},tmp_path,False),metadata,config)
             models=[original];members=[]
