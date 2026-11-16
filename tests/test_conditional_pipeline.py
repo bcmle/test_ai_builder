@@ -390,3 +390,122 @@ def test_document_without_substantive_finding_requires_an_explicit_insufficiency
     assert privacy['applicability_finding'] is None and privacy['applicability_evidence'] is None
     assert 'does not establish' in privacy['applicability_unknown_reason']
     assert state['card']['score']['status'] == 'conditional'
+
+
+def projection_fixture(request):
+    """Small declarative rewrites, independent of the production tokenizer."""
+    def rewrite(text):
+        return (text.replace('S01 scores 2 because ', 'The proposed scenario assumes ')
+            .replace('F03 would support fail', '')
+            .replace('First action on day 1:', 'The proposed test begins on day 1:')
+            .replace('contact the buyer;', 'contacts the buyer;')
+            .replace('stop further feature investment', 'the proposed stop rule stops further feature investment'))
+    texts = {claim['claim_id']:rewrite(claim['neutral_text']) for claim in request['claims']}
+    coverage = []
+    for source in request['source_units']:
+        if source['omittable']:
+            coverage.append(dict(source_id=source['source_id'], disposition='omitted_author_evaluation',
+                                 target_claim_id=None, retained_excerpt=None))
+            continue
+        excerpt = rewrite(source['source_excerpt']).strip()
+        if excerpt.startswith('because '):
+            excerpt = excerpt.removeprefix('because ')
+        targets = [source['claim_id']] if source['claim_id'] else list(texts)
+        target = next(identifier for identifier in targets if excerpt in texts[identifier])
+        coverage.append(dict(source_id=source['source_id'], disposition='retained',
+                             target_claim_id=target, retained_excerpt=excerpt))
+    return dict(rewrites=[dict(claim_id=identifier, neutral_text=text) for identifier,text in texts.items()], coverage=coverage)
+
+
+class ProjectionRoles(ConditionalRoles):
+    def __init__(self, reject_repair=False):
+        super().__init__()
+        self.reject_repair = reject_repair
+        self.saved_factors = None
+
+    async def generate(self, role, request, schema, key):
+        if role == 'repair' and 'projection_protocol' in request:
+            self.calls.append((role, request, key))
+            return projection_fixture(request)
+        if role == 'neutrality' and any('Unverified scenario premises:' in text for text in request['neutral_texts']):
+            self.calls.append((role, request, key))
+            rejected = self.reject_repair or any('S01 scores 2' in text or 'F03 would support fail' in text
+                                                for text in request['neutral_texts'])
+            return dict(status='reject' if rejected else 'accept', reason='Fixture author score/verdict and imperative wording audit')
+        result = await super().generate(role, request, schema, key)
+        if role == 'applicability':
+            for item in result['items']:
+                if item['condition']:
+                    item['condition']['impact_on_factors'] += ' F03 would support fail.'
+        if role == 'factors':
+            result.claims[0].neutral_text = 'S01 scores 2 because an external partner is needed.'
+            result.claims[0].assumptions += [
+                'If a special license is required, the proposed launch does not proceed before that review.',
+                'First action on day 1: contact the buyer; stop further feature investment if no payment by day 30.']
+            self.saved_factors = result.model_dump(mode='json')
+        return result
+
+
+def test_factor_projection_repair_preserves_originals_and_verifies_actual_neutral_text():
+    roles = ProjectionRoles()
+    state = run_case(roles)
+    assert state['factors'] == roles.saved_factors
+    assert state['factor_handoff_policy'] == 'factor-neutral-projection-repair-1'
+    assert state['card']['score']['status'] == 'conditional'
+    assert sum(role == 'repair' for role, _, _ in roles.calls) == 1
+    verifier = next(request for role,request,_ in roles.calls if role == 'verifier'
+                    and any(c['claim_id'] == 'estimate' for c in request['claims']))
+    assert verifier['claims'] == state['factor_handoff']
+    assert 'source_units' not in str(verifier) and 'omitted_author_evaluation' not in str(verifier)
+    assert 'S01 scores 2' not in str(verifier) and 'F03 would support fail' not in str(verifier)
+    assert state['factor_projection_audit']['initial_neutrality']['status'] == 'reject'
+    assert state['factor_projection_audit']['repaired_neutrality']['status'] == 'accept'
+
+
+def test_factor_projection_second_rejection_stops_without_verifier_or_score():
+    roles = ProjectionRoles(reject_repair=True)
+    state = run_case(roles)
+    assert state['card']['score']['status'] == 'unavailable'
+    assert 'factor_neutrality_unresolved' in state['card']['publication_blockers']
+    assert 'factor_handoff' not in state and 'factor_verification' not in state
+    assert sum(role == 'repair' for role, _, _ in roles.calls) == 1
+    assert sum(role == 'verifier' for role, _, _ in roles.calls) == 1  # Critic claims only.
+
+
+@pytest.mark.parametrize('damage', ['missing_condition','duplicate_coverage','omit_operational_unit',
+                                   'new_number','change_nontext_field','cross_claim','drop_partner','drop_negation'])
+def test_invalid_factor_repair_is_bounded_and_cannot_skip_or_mutate_premises(damage):
+    class InvalidProjection(ProjectionRoles):
+        async def generate(self, role, request, schema, key):
+            result = await super().generate(role,request,schema,key)
+            if role=='repair' and 'projection_protocol' in request:
+                units = {unit['source_id']:unit for unit in request['source_units']}
+                if damage=='missing_condition':
+                    result['coverage'] = [row for row in result['coverage']
+                                          if not row['source_id'].startswith('condition:')]
+                elif damage=='duplicate_coverage':
+                    result['coverage'][1] = dict(result['coverage'][0])
+                elif damage=='omit_operational_unit':
+                    row = next(row for row in result['coverage'] if 'external partner' in units[row['source_id']]['source_excerpt'])
+                    row.update(disposition='omitted_author_evaluation', target_claim_id=None, retained_excerpt=None)
+                elif damage=='new_number':
+                    result['rewrites'][0]['neutral_text'] += ' Additional cost is $900.'
+                elif damage=='change_nontext_field':
+                    result['rewrites'][0]['quantity_estimate'] = {'low':1,'high':1}
+                elif damage=='cross_claim':
+                    row = next(row for row in result['coverage'] if row['target_claim_id']=='estimate'
+                               and ':assumption:0:' in row['source_id'])
+                    row['target_claim_id'] = 'days'
+                else:
+                    old,new = ('partner','supplier') if damage=='drop_partner' else ('does not proceed','does proceed')
+                    for row in result['rewrites']:
+                        row['neutral_text'] = row['neutral_text'].replace(old,new)
+                    for row in result['coverage']:
+                        if row['retained_excerpt']:
+                            row['retained_excerpt'] = row['retained_excerpt'].replace(old,new)
+            return result
+    roles = InvalidProjection()
+    with pytest.raises(ValueError):
+        run_case(roles)
+    assert sum(role=='repair' for role,_,_ in roles.calls)==3  # One semantic attempt, bounded format/reference corrections.
+    assert sum(role=='verifier' for role,_,_ in roles.calls)==1

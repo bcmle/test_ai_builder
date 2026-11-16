@@ -1,7 +1,9 @@
 """Strict analytical contracts; provider output cannot decide ranking or eligibility."""
 
 from decimal import Decimal
+from collections import Counter
 from enum import StrEnum
+import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -229,6 +231,207 @@ class HandoffClaim(Contract):
     formula: str | None
     input_claim_ids: list[str]
     quantity_estimate: Interval | None
+
+
+FACTOR_PROJECTION_POLICY = 'factor-neutral-projection-repair-1'
+# Only standalone author labels may be omitted. Splitting records every other
+# span separately, so a mixed score-plus-dependency cannot disappear with it.
+_AUTHOR_EVALUATION = re.compile(
+    r'\bS0[1-5]\s+(?:scores?|is\s+scored|has\s+a\s+score\s+of)\s+[0-4](?:\s*[/–-]\s*[0-4])?(?:\s+out\s+of\s+4)?\b'
+    r'|\bF(?:0[1-9]|10)\s+(?:(?:would|could|will|may)\s+)?(?:support(?:s)?\s+|is\s+|be\s+)?(?:pass|fail|unknown)\b'
+    r'|\bAnother\s+[0-4]\s+remains\s+the\s+conservative\s+interpretation\b', re.I)
+_PROTECTED_ALIASES = {
+    'licensed':'license','licence':'license','licensing':'license','licences':'license','licenses':'license',
+    'partners':'partner','partnership':'partner','dependencies':'dependency','dependent':'dependency',
+    'depends':'dependency','requires':'dependency','required':'dependency','require':'dependency',
+    'needed':'dependency','needs':'dependency','need':'dependency','prerequisite':'dependency',
+    'customers':'customer','client':'customer','clients':'customer','buyers':'buyer',
+    'payments':'payment','paying':'payment','paid':'payment','pay':'payment',
+    'reviews':'review','reviewing':'review','regulatory':'regulator','regulators':'regulator',
+    'suppliers':'provider','supplier':'provider','providers':'provider','processor':'provider',
+    'days':'day','weeks':'week','months':'month','hours':'hour',
+    'stops':'stop','stopping':'stop','halt':'stop','cease':'stop',
+    'assumption':'assume','assumptions':'assume','assumed':'assume','assumes':'assume','assuming':'assume','hypothesis':'assume',
+    'unverified':'uncertain','unproven':'uncertain','uncertainty':'uncertain','unknown':'uncertain',
+    'cannot':'negative','not':'negative','no':'negative','without':'negative',
+    'might':'may','could':'may','conditional':'if','unless':'unless',
+    'proceeds':'proceed','launches':'launch','launching':'launch',
+    'guaranteed':'certainty','definitely':'certainty','established':'certainty','proven':'certainty',
+    'obtaining':'obtain','obtains':'obtain','obtained':'obtain',
+    'contacting':'contact','contacts':'contact','contacted':'contact',
+    'checking':'check','checks':'check','checked':'check',
+    'proposed':'propose','proposes':'propose','proposing':'propose',
+    'begins':'begin','beginning':'begin','includes':'include','including':'include',
+    'states':'state','describes':'describe','premises':'premise','rules':'rule',
+    'we':'team','us':'team','our':'team',
+    'runs':'run','uses':'use','onboards':'onboard','remains':'remain','validates':'validate',
+    'collects':'collect','records':'record','assesses':'assess','completes':'complete',
+}
+_PROTECTED_WORDS = set('license partner dependency customer buyer payment review regulator provider data jurisdiction budget '
+    'day week month hour stop launch proceed investment before after until only if unless may must assume uncertain negative certainty'.split())
+_MODAL_TERMS = set('before after until only if unless may must assume uncertain negative certainty'.split())
+
+
+def _protected_premises(text):
+    values = re.findall(r'[$€£]|\d+(?:[,.]\d+)*%?|[A-Za-z]+', text)
+    return {token.lower() if re.search(r'\d|[$€£]', token) else _PROTECTED_ALIASES.get(token.lower(), token.lower())
+            for token in values if re.search(r'\d|[$€£]', token)
+            or _PROTECTED_ALIASES.get(token.lower(), token.lower()) in _PROTECTED_WORDS}
+
+
+def _quantities(text):
+    return Counter(re.findall(r'[$€£]|\d+(?:[,.]\d+)*(?:[kKmMbB]\b)?%?', text))
+
+
+_FUNCTION_WORDS = set('a an the is are be am do does'.split())
+# Unlike the supplementary premise buckets above, equality must not conflate
+# legal roles, epistemic states, predicates, or different dependency wording.
+_GRAMMATICAL_ALIASES = {
+    'contacts':'contact', 'stops':'stop', 'runs':'run', 'uses':'use', 'proceeds':'proceed',
+    'licence':'license', 'licences':'licenses', 'licenced':'licensed', 'licencing':'licensing',
+}
+_PRESENTATION = re.compile(
+    r'(^|(?<=[.;:\n]))\s*(?:the\s+)?proposed\s+(?:stop\s+rule|test|plan|scenario|procedure|team)'
+    r'(?:\s+(?:is\s+to|assumes?|includes?|begins?|states?|describes?))?\s*'
+    r'|(^|(?<=[.;:\n]))\s*(?:the\s+)?plan\s+is\s+to\s*'
+    r'|Unverified scenario premises:\s*'
+    r'|^\s*First action(?=\s+(?:on\s+day|:)|:)', re.I)
+
+
+def _operational_tokens(text):
+    """Conservative grammar: remove only declared presentation, retain relations."""
+    masked = _PRESENTATION.sub(lambda match:' ' * len(match.group()), text)
+    result = []
+    for match in re.finditer(r'[$€£]|\d+(?:[,.]\d+)*(?:[kKmMbB]\b)?%?|<=|>=|[<>.,;:!?()]|[A-Za-z]+', masked):
+        word = match.group().lower()
+        if word in _FUNCTION_WORDS:
+            continue
+        token = _GRAMMATICAL_ALIASES.get(word, word)
+        result.append((token, match.start(), match.end()))
+    return result
+
+
+def _content_tokens(text):
+    return [token for token,_,__ in _operational_tokens(text)]
+
+
+def _negative_anchors(text):
+    words = [_PROTECTED_ALIASES.get(word.lower(), word.lower()) for word in re.findall(r'[A-Za-z]+', text)]
+    material = _PROTECTED_WORDS - _MODAL_TERMS - {'day','week','month','hour'}
+    anchors = []
+    for index, word in enumerate(words):
+        if word != 'negative':
+            continue
+        after = next((token for token in words[index + 1:] if token in material), None)
+        if after == 'dependency':
+            after = next((token for token in reversed(words[:index]) if token in material - {'dependency'}), after)
+        anchors.append(after)
+    return Counter(anchors)
+
+
+class FactorTextRewrite(Contract):
+    claim_id: str
+    neutral_text: str = Field(min_length=1, max_length=24000)
+
+
+class FactorProjectionCoverage(Contract):
+    source_id: str
+    disposition: Literal['retained', 'omitted_author_evaluation']
+    target_claim_id: str | None
+    retained_excerpt: str | None = Field(max_length=16000)
+
+
+class FactorNeutralProjection(Contract):
+    rewrites: list[FactorTextRewrite]
+    coverage: list[FactorProjectionCoverage]
+
+
+def factor_projection_sources(claims: list[Claim], conditions: list[dict]) -> list[dict]:
+    """Private, deterministic provenance units. No source is silently removed."""
+    parts = [(f'claim:{claim.claim_id}:text', claim.claim_id, claim.neutral_text) for claim in claims]
+    parts += [(f'claim:{claim.claim_id}:assumption:{index}', claim.claim_id, text)
+              for claim in claims for index, text in enumerate(claim.assumptions)]
+    parts += [(f'condition:{condition["condition_id"]}:{field}', None, condition[field])
+              for condition in conditions for field in ('assumption','required_check','impact_on_factors')]
+    units = []
+    for origin, claim_id, text in parts:
+        position, spans = 0, []
+        for match in _AUTHOR_EVALUATION.finditer(text):
+            if match.start() > position:
+                spans.append((position, match.start(), False))
+            spans.append((match.start(), match.end(), True))
+            position = match.end()
+        if position < len(text) or not spans:
+            spans.append((position, len(text), False))
+        for index, (start, end, omittable) in enumerate(spans):
+            excerpt = text[start:end]
+            units.append(dict(source_id=f'{origin}:{index}', origin=origin, claim_id=claim_id,
+                source_start=start, source_end=end, source_excerpt=excerpt, omittable=omittable,
+                author_evaluation_connector=bool(index and spans[index - 1][2]
+                                                and re.match(r'\s*because\b', excerpt, re.I)),
+                protected_terms=sorted(_protected_premises(excerpt))))
+    return units
+
+
+def validate_factor_projection(projection: FactorNeutralProjection, originals: list[HandoffClaim], sources: list[dict]):
+    original_ids = {claim.claim_id for claim in originals}
+    rewritten = {claim.claim_id:claim.neutral_text for claim in projection.rewrites}
+    if len(projection.rewrites) != len(originals) or set(rewritten) != original_ids:
+        raise ValueError('Neutral projection must preserve every original claim ID exactly once')
+    source_map = {source['source_id']:source for source in sources}
+    if len(projection.coverage) != len(sources) or {c.source_id for c in projection.coverage} != set(source_map):
+        raise ValueError('Neutral projection must account for every text, assumption and condition component exactly once')
+    covered = {identifier:set() for identifier in original_ids}
+    for item in projection.coverage:
+        source = source_map[item.source_id]
+        if item.disposition == 'omitted_author_evaluation':
+            if not source['omittable'] or item.target_claim_id is not None or item.retained_excerpt is not None:
+                raise ValueError('Only a pure author score or verdict may be omitted; operational premises must remain')
+            continue
+        text = rewritten.get(item.target_claim_id)
+        if (text is None or (source['claim_id'] is not None and item.target_claim_id != source['claim_id'])
+                or not item.retained_excerpt or item.retained_excerpt not in text):
+            raise ValueError('Coverage must quote a retained fragment in the corresponding neutral claim')
+        if source['omittable']:
+            raise ValueError('The rejected author score or verdict must not enter the repaired verifier projection')
+        target_terms = _protected_premises(item.retained_excerpt)
+        required = set(source['protected_terms'])
+        source_content = re.sub(r'^\s*because\s+', '', source['source_excerpt'], flags=re.I) if source['author_evaluation_connector'] else source['source_excerpt']
+        if (not required <= target_terms or required & _MODAL_TERMS != target_terms & _MODAL_TERMS
+                or _quantities(source['source_excerpt']) != _quantities(item.retained_excerpt)
+                or _negative_anchors(source['source_excerpt']) != _negative_anchors(item.retained_excerpt)
+                or _content_tokens(source_content) != _content_tokens(item.retained_excerpt)):
+            raise ValueError('Neutral repair changed an operational dependency, number, time, negation or modality')
+        # Bind each map entry to one literal occurrence, preferring uncovered
+        # occurrences. Repeating a proposition cannot hide behind one reference.
+        positions, offset = [], 0
+        while (start := text.find(item.retained_excerpt, offset)) >= 0:
+            positions.append(start)
+            offset = start + 1
+        start = max(positions, key=lambda position:sum(index not in covered[item.target_claim_id]
+                    for index in range(position, position + len(item.retained_excerpt))))
+        covered[item.target_claim_id].update(range(start, start + len(item.retained_excerpt)))
+    for original in originals:
+        routed_conditions = {item.source_id for item in projection.coverage
+                             if item.disposition == 'retained' and item.target_claim_id == original.claim_id
+                             and source_map[item.source_id]['claim_id'] is None}
+        retained_sources = [source['source_excerpt'] for source in sources
+                            if (source['claim_id'] == original.claim_id or source['source_id'] in routed_conditions)
+                            and not source['omittable']]
+        original_text = ' '.join(retained_sources)
+        new_text = rewritten[original.claim_id]
+        if _quantities(new_text) - _quantities(original_text):
+            raise ValueError('Neutral repair introduced a new quantitative premise')
+        # A declarative judgment may explicitly label its existing hypotheses;
+        # it may not add certainty, negate a new premise or strengthen may to must.
+        permitted = {'assume','uncertain'} if original.kind == 'judgment' else set()
+        if (_protected_premises(new_text) & _MODAL_TERMS) - (_protected_premises(original_text) | permitted):
+            raise ValueError('Neutral repair introduced a new condition, negation or strengthened modality')
+        if any(not set(range(start,end)) <= covered[original.claim_id]
+               for _,start,end in _operational_tokens(new_text)):
+            raise ValueError('Neutral repair contains an unmapped operational assertion or duplicate proposition')
+    # All nontext fields are copied by code, never reconstructed by the model.
+    return [claim.model_copy(update={'neutral_text':rewritten[claim.claim_id]}) for claim in originals]
 
 
 def handoff(claims: list[Claim], risks: list[Risk], allowed_snapshots: set[str],

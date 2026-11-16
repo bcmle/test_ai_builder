@@ -421,3 +421,49 @@ and search requests, with no unsettled usage. One input-count operation is
 recorded separately with cost not reported. These are saved-tariff ledger
 calculations, not a confirmed provider invoice or a claim that the model is
 ready for the final ranking.
+
+## Conditional reassessment — v1.5.2, 16 November 2026
+
+The approved policy distinguishes mandatory eligibility from explicit conditional
+launch assumptions and reviews each comparable's legal documents. The new queue
+preserves the original twenty model identities, scenario, study and cumulative
+$100 limit ($25 per child). It prioritizes original F10 pass, then fewer unknown
+criteria, starting with Electronic Signature Workflows. Each completed assessment
+is published separately; earlier findings remain available while a replacement is
+pending or technically interrupted. Focused analyses retain their separate links.
+
+PRs #7 and #8 merged as `82b540ba7f742989098c464c2294b3bef7cbe461` and
+`08e5699d4f04f5e70b35734d7c491eca8c6d7cbf`.
+[Release 43790302203](https://github.com/bcmle/test_ai_builder/actions/runs/43790302203)
+passed 377 Linux tests and deployed image
+`sha256:5b34b8f949ae589ec42fc6012725505a4c270e38353d6e84e4739da5dac1904b`.
+The existing restart, restore, encrypted export and HTTPS checks passed. Pending
+cards and previous findings were checked at 1440×900 and 390×844 without horizontal
+overflow. The focused Helpdesk link remained accessible.
+
+Reassessment `13057b6a4dbf418fb01b2ac5c93a3fc1` began at 02:16:51 UTC. Travel
+Comparison Referrals completed with F04 unknown, so it has no score. Electronic
+Signature Workflows, Subscription Billing Orchestration and Identity Access
+Reviews stopped technically. All three saved factor-premise neutrality receipts
+reject author scores or directive test-plan wording in the handoff. The gate
+correctly rejected that wording. Replaying its cached rejection cannot resolve it.
+
+Before a bounded handoff repair release, the research worker was stopped at a
+verified quiet boundary at 03:07 UTC. The helper checks process identity, database
+activity and all collection usage/provider/source operations before queuing
+SIGINT for the existing cleanup handlers. The saved collection is partial with
+four processed items; item five had begun and remains resumable. All 240 physical
+usage requests were settled, with $35.362550 calculated cumulative spending,
+zero active leases and zero open clocks. This is a saved-tariff ledger estimate,
+not a provider invoice. Budgets, historical receipts and frozen inputs were not
+changed. Specs `1273859` define the bounded repair before its implementation.
+
+The repair implementation preserves operational token order, clause boundaries,
+quantities, role wording and negation while allowing narrow declarative wrappers.
+All original text units and condition components have a private coverage map;
+unmapped added assertions are rejected. The repaired projection must pass the
+unchanged neutrality gate before factor verification. Public passports distinguish
+the actual verified wording from the author's original rationale. Local validation
+passed 422 tests with one expected macOS-only memory-limit skip; PostgreSQL
+regressions cover paid response reuse, interruption after the repair receipt,
+completed replay and unchanged legacy serialization.
