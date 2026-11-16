@@ -167,7 +167,7 @@ def test_conditional_pages_and_comparison_are_revision_bound(config, tmp_path):
         comparison = client.get(url + '&revision=reassessment-revision-a')
         assert comparison.status_code == 200
         assert 'Conditional assessment' in comparison.text and 'Final assessment' in comparison.text
-        assert 'Launch conditions' in comparison.text and 'Legal document review' in comparison.text
+        assert 'Open launch checks' in comparison.text and 'Legal coverage and gaps' in comparison.text
         assert client.get('/models/model-a?run=collection-a').text.count('Follow the current reassessment') == 1
 
 
