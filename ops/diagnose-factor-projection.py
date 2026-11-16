@@ -44,7 +44,7 @@ def render_report(report, compact=False):
     if compact:
         keys = ('read_only','collection','position','run_id','state','error_code','candidates',
                 'input_event_id','created_at','correction_attempt','provider_state','policy',
-                'validation','coverage_counts','mismatching_units_count','unmapped_claims_count',
+                'validation','coverage_counts','mismatching_units_count','issue_offset','unmapped_claims_count',
                 'diagnostic_error')
         view = {key:report[key] for key in keys if key in report}
         if report.get('mismatching_units'):
@@ -77,7 +77,7 @@ def render_report(report, compact=False):
         # A huge ID/path or unmapped list must never bypass the output budget.
         keys = ('read_only','collection','position','run_id','state','error_code','candidates',
                 'input_event_id','created_at','correction_attempt','provider_state',
-                'validation','coverage_counts','mismatching_units_count','unmapped_claims_count')
+                'validation','coverage_counts','mismatching_units_count','issue_offset','unmapped_claims_count')
         report = {key:report[key] for key in keys if key in report}
         report['output_truncated'] = True
         encoded = json.dumps(report,ensure_ascii=False,default=str)
@@ -100,7 +100,9 @@ def token_diff(before, after):
     return changes[:5]
 
 
-def diagnose_payload(packet, candidate, max_issues=12):
+def diagnose_payload(packet, candidate, max_issues=12, issue_offset=0):
+    if not 0 <= issue_offset <= 1000:
+        raise ValueError('issue_offset must be between 0 and 1000')
     result = {'policy': packet.get('projection_protocol', {}).get('version')}
     originals = [HandoffClaim.model_validate(value) for value in packet['claims']]
     sources = packet['source_units']
@@ -172,7 +174,8 @@ def diagnose_payload(packet, candidate, max_issues=12):
                          reasons=reasons)
             failures.append(issue)
     result['mismatching_units_count'] = len(failures)
-    result['mismatching_units'] = failures[:max_issues]
+    result['issue_offset'] = issue_offset
+    result['mismatching_units'] = failures[issue_offset:issue_offset+max_issues]
     unmapped = []
     for identifier,text in rewritten.items():
         tokens = [(token,start,end) for token,start,end in _operational_tokens(text)
@@ -205,6 +208,8 @@ def main():
     parser.add_argument('--position',required=True,type=int,choices=range(1,21))
     parser.add_argument('--max-candidates',type=int,default=3,choices=range(1,11))
     parser.add_argument('--max-issues',type=int,default=8,choices=range(1,21))
+    parser.add_argument('--issue-offset',type=int,default=0,choices=range(0,1001),metavar='0..1000',
+                        help='Skip this many mismatching source units; the total count remains unchanged')
     parser.add_argument('--compact',action='store_true',help='Console-friendly first mismatch per candidate; omit for fuller JSON diagnostics')
     args = parser.parse_args()
     dsn = os.environ.get('DATABASE_URL')
@@ -244,7 +249,8 @@ def main():
                     report['recorded_errors'] = [dict(code=e.get('code'),path=e.get('path'),message=safe(e.get('message'),300))
                                                  for e in rejection['errors'][:3]]
                 try:
-                    report.update(diagnose_payload(payload['input'],parse_response(operation['response']),args.max_issues))
+                    report.update(diagnose_payload(payload['input'],parse_response(operation['response']),
+                                                   args.max_issues,args.issue_offset))
                 except Exception as error:
                     report['diagnostic_error'] = dict(type=type(error).__name__,message=safe(error,300))
                 # All emitted content is bounded claim/excerpt diagnostics; never
