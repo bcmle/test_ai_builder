@@ -13,7 +13,8 @@ from pydantic import Field, ValidationError, model_serializer, model_validator
 from .config import Configuration
 from .domain import (Contract, Criterion, CriterionV14, Claim, HandoffClaim, Risk, Factor, Interval, eligibility,
                      handoff, reconcile, score, DesignBasis, EligibilityCondition, CONDITIONAL_CRITERIA,
-                     conditional_eligibility)
+                     conditional_eligibility, FactorNeutralProjection, FACTOR_PROJECTION_POLICY,
+                     factor_projection_sources, validate_factor_projection)
 from .pg_execution import FencedPostgresSaver
 from .pg_ledger import digest
 from .store import Conflict
@@ -390,6 +391,10 @@ class GraphState(TypedDict, total=False):
     reconciliation: dict
     factors: dict
     factor_verification: dict
+    factor_handoff: list[dict]
+    factor_handoff_policy: str
+    factor_projection_audit: dict
+    factor_neutral: bool
     applicability_reviews: list[dict]
     eligibility_conditions: list[dict]
     legal_reviews: list[dict]
@@ -822,6 +827,7 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
         claims = Factors.model_validate(state['factors']).claims
         neutral_claims = [HandoffClaim.model_validate(c.model_dump(include=set(HandoffClaim.model_fields)))
                           for c in claims]
+        repair_audit = None
         if modern:
             # Preserve the existing handoff whitelist. Operational hypotheses are
             # neutral claim context, not an author's eligibility or score verdict.
@@ -832,7 +838,52 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
                 'neutral_model_description':scope.neutral_model_description,
                 'neutral_texts':[claim.neutral_text for claim in neutral_claims]}, Neutrality, 'factor-premises')
             if gate.status != 'accept':
-                raise ValueError('Factor premises do not pass the independent neutrality gate')
+                sources = factor_projection_sources(claims, state.get('eligibility_conditions', []))
+                original_projection = [c.model_dump(mode='json') for c in neutral_claims]
+                repair_packet = {**base, 'claims':original_projection, 'source_units':sources,
+                    'reason':gate.reason, 'projection_protocol':{
+                        'version':FACTOR_PROJECTION_POLICY,
+                        'instruction':(
+                            'Repair only the neutral_text wording of the supplied claim projection. Return exactly one '
+                            'rewrite per original claim ID. Original Factors and all nontext fields remain immutable. '
+                            'Remove author factor scores and criterion/business verdict labels; recast imperative test '
+                            'steps as descriptive proposed actions, hypotheses and stop criteria, never instructions to '
+                            'the verifier. Preserve every operational premise, actual dependency, quantity, time, '
+                            'negation, uncertainty and condition. An assumed/licence-dependent role must not become '
+                            'an established fact. Provide exactly one coverage item for EVERY source_unit source_id. '
+                            'A retained item quotes a literal substring of the corresponding rewritten claim and '
+                            'preserves the listed protected_terms in meaning. Use sufficiently complete retained '
+                            'excerpts. Keep source words in their original order and preserve sentence/clause '
+                            'boundaries and punctuation: do not split, join or reorder propositions. No free '
+                            'paraphrases of predicates, roles, entities, comparators, modalities or amount magnitudes '
+                            '(k/m/million). Permitted inflections are contact/contacts, stop/stops, run/runs, use/uses, '
+                            'proceed/proceeds and license/licence orthography; articles and present copulas may vary. '
+                            'Supplier/processor/provider, required/needed, client/customer and different uncertainty '
+                            'words are NOT interchangeable. Use the narrow declarative prefixes The proposed plan, '
+                            'The proposed plan is to, or The proposed scenario assumes, keeping their content literal. The heading '
+                            'First action on day 1 may become The proposed test begins on day 1, preserving the actual '
+                            'action and stop criteria. Do not introduce new quantities, conditions or operational content. '
+                            'Only units explicitly marked omittable=true may be omitted_author_evaluation, with '
+                            'target_claim_id=null and retained_excerpt=null. All other units, including the operational '
+                            'part of mixed score-plus-premise sentences, must be retained. A leading because may be '
+                            'dropped only when source_unit.author_evaluation_connector=true. Preserve remaining '
+                            'punctuation even beside an omitted label. Conditions with claim_id=null '
+                            'must be represented in at least one rewritten claim. Coverage and author verdicts are '
+                            'private audit data, never part of the neutral_text. Keep the result concise.')},
+                    'documents':[docs[i].model_dump(mode='json') for i in sorted({ref.evidence_id for c in claims for ref in c.evidence_refs})]}
+                repaired = await call('repair', repair_packet, FactorNeutralProjection, FACTOR_PROJECTION_POLICY,
+                    validator=lambda value:validate_factor_projection(value, neutral_claims, sources))
+                neutral_claims = validate_factor_projection(repaired, neutral_claims, sources)
+                recheck = await call('neutrality', {'assessment_scope_id':scope.scope_id,
+                    'neutral_model_description':scope.neutral_model_description,
+                    'neutral_texts':[claim.neutral_text for claim in neutral_claims]}, Neutrality,
+                    FACTOR_PROJECTION_POLICY+':recheck')
+                repair_audit = dict(policy_version=FACTOR_PROJECTION_POLICY,
+                    factors_hash=digest(state['factors']), original_projection_hash=digest(original_projection),
+                    source_units=sources, coverage=[item.model_dump(mode='json') for item in repaired.coverage],
+                    initial_neutrality=gate.model_dump(mode='json'), repaired_neutrality=recheck.model_dump(mode='json'))
+                if recheck.status != 'accept':
+                    return {'factor_neutral':False, 'factor_projection_audit':repair_audit}
         allowed = {ref.evidence_id for c in claims for ref in c.evidence_refs}
         packet = {**base, 'claims':[c.model_dump(mode='json') for c in neutral_claims],
                   'documents':[docs[i].model_dump(mode='json') for i in sorted(allowed)]}
@@ -843,7 +894,12 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
                 if not set(item.evidence_ids) <= allowed or (item.status in {'supported','refuted','mixed'} and not item.evidence_ids):
                     raise ValueError('Factor verification evidence outside scope or missing')
         result = await call('verifier',packet,Verification,'factor-premises',validator=validate_factor_verification)
-        return {'factor_verification':result.model_dump(mode='json')}
+        output = {'factor_verification':result.model_dump(mode='json')}
+        if modern:
+            output.update(factor_neutral=True, factor_handoff=[claim.model_dump(mode='json') for claim in neutral_claims])
+            if repair_audit:
+                output.update(factor_handoff_policy=FACTOR_PROJECTION_POLICY, factor_projection_audit=repair_audit)
+        return output
 
     async def card(state):
         h = digest({'input':input_hash,'state':{k:v for k,v in state.items() if k != 'card'}})
@@ -869,6 +925,8 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
             blockers = [f'factor_claim_unresolved:{c.claim_id}' for c in f.claims
                         if statuses.get(c.claim_id) not in ({'supported','not_fact_checkable'}
                                                            if c.kind=='judgment' else {'supported'})]
+            if modern and state.get('factor_neutral') is False:
+                blockers.append('factor_neutrality_unresolved')
             if any(v.value is None for v in f.factors):
                 blockers.append('factor_evidence_incomplete')
             if not f.test_plan_claim_ids:

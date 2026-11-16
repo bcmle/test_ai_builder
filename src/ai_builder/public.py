@@ -107,6 +107,16 @@ class ClaimPassport(PublicContract):
     verification: str | None = None
     checked_at: str | None = None
     source_refs: list[SourceRef] = Field(default_factory=list)
+    verification_text_source: Literal['factor_handoff'] | None = None
+    author_text: str | None = None
+
+    @model_serializer(mode='wrap')
+    def preserve_legacy_passport(self, handler):
+        value = handler(self)
+        for field in ('verification_text_source', 'author_text'):
+            if getattr(self, field) is None:
+                value.pop(field, None)
+        return value
 
 
 class DesignBasis(PublicContract):
@@ -473,19 +483,28 @@ def public_model(result, metadata: dict, config) -> dict:
     critique, factors = state.get('critique') or {}, state.get('factors') or {}
     verification = {item['claim_id']: item.get('status') for field in ('verification', 'factor_verification')
                     for item in (state.get(field) or {}).get('items', [])}
+    factor_ids = {claim['claim_id'] for claim in factors.get('claims', [])}
+    factor_verified_ids = {item['claim_id'] for item in (state.get('factor_verification') or {}).get('items', [])
+                           if item.get('status')}
+    factor_handoff = {claim['claim_id']: claim for claim in state.get('factor_handoff', [])
+                      if claim['claim_id'] in factor_ids and claim['claim_id'] in factor_verified_ids}
     claims = {}
     for claim in [*critique.get('claims', []), *factors.get('claims', [])]:
+        identifier = claim['claim_id']
+        verified_input = factor_handoff.get(identifier)
+        text = verified_input['neutral_text'] if verified_input else claim['neutral_text']
         refs = []
         for ref in claim.get('evidence_refs', []):
             if ref.get('source_snapshot_id') in known_sources:
                 refs.append(dict(source_id=ref['source_snapshot_id'], excerpt=_clip(ref.get('excerpt')),
                                  locator=ref.get('locator')))
-        identifier = claim['claim_id']
-        claims[identifier] = dict(id=identifier, text=claim['neutral_text'], kind=claim['kind'],
+        claims[identifier] = dict(id=identifier, text=text, kind=claim['kind'],
             **{key: claim.get(key) for key in ('method', 'confidence', 'confidence_reason', 'entity', 'geography', 'period', 'metric', 'formula')},
             input_claim_ids=claim.get('input_claim_ids') or [], assumptions=claim.get('assumptions') or [],
             verification=verification.get(identifier),
-            checked_at=card.get('validated_at') if identifier in verification else None, source_refs=refs)
+            checked_at=card.get('validated_at') if identifier in verification else None, source_refs=refs,
+            verification_text_source='factor_handoff' if verified_input else None,
+            author_text=claim['neutral_text'] if verified_input and text != claim['neutral_text'] else None)
     status = card.get('eligibility') or metadata.get('status', 'queued')
     if status not in STATUS_LABELS:
         status = 'incomplete'

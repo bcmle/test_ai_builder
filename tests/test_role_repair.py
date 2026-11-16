@@ -24,6 +24,80 @@ def unknown_research():
                              reason='No applicable evidence established') for i in range(1,11)]}
 
 
+def test_factor_neutral_projection_resumes_cached_rejection_and_crash_without_repaying_stages():
+    from collections import Counter
+    from pathlib import Path
+    from ai_builder.config import load_config
+    import ai_builder.pipeline as pipeline
+    from test_conditional_pipeline import ProjectionRoles, conditional_packet
+
+    async def scenario():
+        await migrate(DSN)
+        config = load_config(Path(__file__).parents[1]/'config/conditional-config.json')
+        scope = conditional_packet()
+        async with execution_pool(DSN) as pool:
+            ledger,_,_ = await setup(pool,config)
+            fixture, paid = ProjectionRoles(), []
+            prefix, prompts = pipeline.prompt_bundle('1.2')
+            async def handler(request):
+                body = json.loads(request.content)
+                role = next(name for name, prompt in prompts.items() if body['instructions'].startswith(prefix+prompt))
+                packet = json.loads(body['input'][0]['content'])
+                schema = getattr(pipeline, body['text']['format']['name'])
+                result = await fixture.generate(role, packet, schema, 'fixture-http')
+                value = result.model_dump(mode='json') if hasattr(result,'model_dump') else result
+                paid.append(role)
+                return httpx.Response(200,json=model_result(text=json.dumps(value)))
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                roles = ModelRoles(ledger, pricing(), 'fixture',
+                    {role:dict(reasoning_effort='low',max_output_tokens=4096) for role in PROMPTS},
+                    purpose='eval',client=client,prompt_prefix=prefix,prompts=prompts)
+                receipt = ledger.receipt
+                async def old_failure(scope_id,node,key,input_hash,result=None):
+                    value = await receipt(scope_id,node,key,input_hash,result)
+                    if node=='neutrality' and result is not None and result.get('status')=='reject':
+                        raise ValueError('Simulated previously deployed factor neutrality stop')
+                    return value
+                ledger.receipt = old_failure
+                with pytest.raises(ValueError,match='previously deployed'):
+                    await execute_scope(ledger,config,scope,roles)
+                baseline = Counter(paid)
+                assert baseline['research']==baseline['critic']==baseline['factors']==1 and baseline['repair']==0
+                before = await ledger.summary(ledger.run_id)
+                assert before['reserved_micro']==before['unknown_micro']==0
+                # Explicit owner recovery in this fixture, preserving all caps,
+                # frozen inputs, usage and the same checkpoint/worker identity.
+                async with ledger.locked(ledger.run_id,fenced=True) as (conn,_,__):
+                    await conn.execute("UPDATE app.runs SET status='running',control_version=control_version+1 WHERE id=%s", (ledger.run_id,))
+                    await ledger.event(conn,ledger.run_id,'explicit_test_recovery',{'policy':'factor-neutral-projection-repair-1'})
+                interrupted = False
+                async def crash_after_repair(scope_id,node,key,input_hash,result=None):
+                    nonlocal interrupted
+                    value = await receipt(scope_id,node,key,input_hash,result)
+                    if node=='repair' and result is not None and 'coverage' in result and not interrupted:
+                        interrupted = True
+                        raise RuntimeError('Crash after paid repair receipt')
+                    return value
+                ledger.receipt = crash_after_repair
+                with pytest.raises(RuntimeError,match='paid repair receipt'):
+                    await execute_scope(ledger,config,scope,roles,resume=True)
+                assert Counter(paid)-baseline == Counter(repair=1)
+                ledger.receipt = receipt
+                state = await execute_scope(ledger,config,scope,roles,resume=True)
+                assert state['card']['score']['status']=='conditional'
+                assert state['factors']==fixture.saved_factors
+                assert Counter(paid)-baseline == Counter(repair=1,neutrality=1,verifier=1)
+                after = await ledger.summary(ledger.run_id)
+                assert len(after['requests'])-len(before['requests'])==3
+                assert after['reserved_micro']==after['unknown_micro']==0
+                saved = await execute_scope(ledger,config,scope,roles,resume=True)
+                assert saved['card']==state['card'] and await ledger.summary(ledger.run_id)==after
+                async with pool.connection() as conn:
+                    rejected = await (await conn.execute("SELECT result FROM app.node_receipts WHERE run_id=%s AND node_name='neutrality' AND result->>'status'='reject'", (ledger.run_id,))).fetchall()
+                assert len(rejected)==1  # Paid original rejection retained, never overwritten.
+    asyncio.run(scenario())
+
+
 def model_roles(ledger, client):
     return ModelRoles(ledger, pricing(), 'fixture',
                       {role:dict(reasoning_effort='low',max_output_tokens=4096) for role in PROMPTS},

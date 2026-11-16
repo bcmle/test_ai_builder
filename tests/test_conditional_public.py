@@ -183,6 +183,11 @@ def test_real_conditional_pipeline_card_projects_and_publishes(coverage, tmp_pat
         assert model['status'] == model['score']['status'] == 'conditional'
         assert model['completed_stages'] == state['card']['completed_stages']
         assert model['eligible_for_ranking']
+        public_claims = {claim['id']: claim for claim in model['claims']}
+        assert state['factor_handoff']
+        for handed_off in state['factor_handoff']:
+            assert public_claims[handed_off['claim_id']]['text'] == handed_off['neutral_text']
+            assert public_claims[handed_off['claim_id']]['verification_text_source'] == 'factor_handoff'
         review = model['legal_reviews'][0]
         assert 'local_licensing_not_established' in review['gaps']
         assert 'The terms do not establish our regulatory status.' in review['gaps']
@@ -350,3 +355,52 @@ def test_each_document_shows_substantive_applicability_or_explicit_gap(config, t
         assert 'not an approval of our legal status' in detail
         assert 'This document was not read.' in detail
         assert 'document_not_read' not in detail
+
+
+def test_public_factor_passport_uses_actual_verified_handoff_and_labels_author(config, tmp_path):
+    result = conditional_result()
+    original = result.state['factors']['claims'][0]
+    author_text = 'The factor deserves a strong rating because interviews are easy to arrange.'
+    neutral_text = 'The proposed demand test includes interviews with potential customers before building.'
+    original['neutral_text'] = author_text
+    result.state['factor_handoff'] = [{**original, 'neutral_text':neutral_text,
+                                       'private_coverage':'PRIVATE-COVERAGE'}]
+    result.state['factor_handoff_policy'] = 'factor-neutral-projection-repair-1'
+    result.state['factor_projection_audit'] = {'private_gate':'PRIVATE-AUDIT', 'source_units':['PRIVATE-SOURCE-UNITS']}
+    model = public_model(result, metadata(), config)
+    claim = next(claim for claim in model['claims'] if claim['id'] == 'plan-a')
+    assert claim['text'] == neutral_text
+    assert claim['author_text'] == author_text
+    assert claim['verification_text_source'] == 'factor_handoff'
+    assert claim['verification'] == 'not_fact_checkable'
+    assert claim['assumptions'] == original['assumptions']
+    serialized = json.dumps(model)
+    assert 'factor_projection_audit' not in serialized and 'PRIVATE-' not in serialized
+    assert 'factor-neutral-projection-repair-1' not in serialized
+    publish_snapshot(tmp_path, versioned_snapshot([model]))
+    with TestClient(create_app(data_dir=tmp_path, database_url='')) as client:
+        detail = client.get('/models/model-a').text
+        assert neutral_text in detail and 'Author’s original rationale' in detail
+        assert author_text in detail and 'This original wording was not the verifier’s input.' in detail
+        assert 'Author assumptions' in detail
+        assert 'PRIVATE-' not in detail
+
+
+def test_unverified_or_unrelated_factor_handoff_cannot_replace_public_claim(config):
+    result = conditional_result()
+    original = result.state['factors']['claims'][0]
+    result.state['factor_handoff'] = [
+        {**original, 'neutral_text':'UNVERIFIED-NEUTRAL-REWRITE'},
+        {**result.state['critique']['claims'][0], 'neutral_text':'UNRELATED-CRITIC-REWRITE'}]
+    result.state['factor_verification'] = {'items':[]}
+    model = public_model(result, metadata(), config)
+    claim = next(claim for claim in model['claims'] if claim['id'] == 'plan-a')
+    assert claim['text'] == original['neutral_text'] and claim['verification'] is None
+    assert 'verification_text_source' not in claim and 'author_text' not in claim
+    assert 'UNVERIFIED-NEUTRAL-REWRITE' not in json.dumps(model)
+    assert 'UNRELATED-CRITIC-REWRITE' not in json.dumps(model)
+
+
+def test_legacy_factor_passport_shape_is_unchanged_without_recorded_handoff(config):
+    model = public_model(result_fixture(), metadata(), config)
+    assert all('verification_text_source' not in claim and 'author_text' not in claim for claim in model['claims'])
