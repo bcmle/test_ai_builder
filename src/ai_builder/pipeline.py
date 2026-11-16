@@ -5,6 +5,7 @@ sent to a model. Production publication and owner review are separate boundaries
 """
 from datetime import datetime, timezone
 from decimal import Decimal, Inexact, localcontext
+from fractions import Fraction
 import re
 from typing import Literal, TypedDict
 
@@ -275,6 +276,39 @@ def materialize_milestones(result: FactorsV153, market: str) -> FactorsStateV153
     return FactorsStateV153.model_validate(value)
 
 
+def _validate_rounded_budget_share(share, cost, scenario, factors, budget, statuses):
+    """A closed whole-percent display format; never evaluate an author expression."""
+    number=r'([0-9]+(?:\.[0-9]+)?)'
+    formula=re.fullmatch(number+'/'+number+r'×100≈([0-9]+)%;'+number+'/'+number+r'×100≈([0-9]+)%\.?',
+                         ''.join((share.formula or '').split()))
+    # The saved operating branch explicitly declares the fixed launch scenario.
+    # This is a narrow literal declaration, not a currency substring inference.
+    declaration=re.match(
+        r'^The conditional model uses one full-time developer and one full-time sales/product person, '
+        r'each working five days per week, with a \$([0-9]{1,3}(?:,[0-9]{3})*|[0-9]+(?:\.[0-9]+)?) '
+        r'non-salary budget and a 90-day experiment horizon\.(?:\s|$)',
+        scenario.neutral_text if scenario is not None else '')
+    if (share.kind!='calculation' or share.method!='calculation'
+            or share.input_claim_ids!=['factor-cost','factor-operating-branch']
+            or factors.cost_claim_id!='factor-cost' or factors.cost is None
+            or cost is None or cost.quantity_estimate!=factors.cost
+            or cost.metric!='USD, non-salary expenditure'
+            or share.quantity_estimate is None or budget is None or not budget.is_finite() or budget<=0
+            or formula is None or declaration is None
+            or Decimal(declaration.group(1).replace(',',''))!=budget):
+        raise ValueError('Rounded budget share lacks its exact USD inputs or frozen scenario declaration')
+    low,lower_budget,lower_percent,high,upper_budget,upper_percent=map(Decimal,formula.groups())
+    # Fraction retains the exact ratios even for recurring decimal expansions.
+    def nearest_whole(value):
+        return Decimal((100*Fraction(value)/Fraction(budget)+Fraction(1,2))//1)
+    expected=Interval(low=nearest_whole(factors.cost.low),high=nearest_whole(factors.cost.high))
+    if (Interval(low=low,high=high)!=factors.cost or lower_budget!=budget or upper_budget!=budget
+            or Interval(low=lower_percent,high=upper_percent)!=expected or share.quantity_estimate!=expected
+            or any(statuses.get(source.claim_id) not in ({'supported','not_fact_checkable'}
+                   if source.kind=='judgment' else {'supported'}) for source in (cost,scenario))):
+        raise ValueError('Rounded budget share differs from its independently reviewed inputs or rounding')
+
+
 def validate_factor_verification(result: Verification, factors: Factors | FactorsStateV153,
                                  *, market: str, milestones: bool = False,
                                  business_budget_usd: Decimal | None = None) -> None:
@@ -311,7 +345,13 @@ def validate_factor_verification(result: Verification, factors: Factors | Factor
         statuses={item.claim_id:item.status for item in result.items}
         share=by_id.get('factor-budget-share')
         cost=by_id.get('factor-cost')
-        scenario=by_id.get('factor-scenario')
+        rounded=share is not None and share.metric=='Percent of non-salary budget, rounded'
+        scenario=by_id.get('factor-operating-branch' if rounded else 'factor-scenario')
+        if share is not None and statuses.get(share.claim_id)=='supported' and not next(item for item in result.items if item.claim_id==share.claim_id).evidence_ids:
+            if rounded:
+                _validate_rounded_budget_share(share,cost,scenario,factors,business_budget_usd,statuses)
+                arithmetic_ids.add(share.claim_id)
+                share=None  # The distinct exact format below remains unchanged.
         if share is not None and statuses.get(share.claim_id)=='supported' and not next(item for item in result.items if item.claim_id==share.claim_id).evidence_ids:
             number=r'([0-9]+(?:\.[0-9]+)?)'
             formula=re.fullmatch(r'100×\['+number+','+number+r'\]/'+number+r'=\['+number+','+number+r'\]\.?',
