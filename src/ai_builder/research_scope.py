@@ -46,11 +46,13 @@ class ResearchContext(FrozenContract):
     parent_collection_id: str | None = None
     parent_run_id: str | None = None
     upstream_manifest: dict | None = None
+    recovery_allowance_id: str | None = None
 
     @model_serializer(mode='wrap')
     def serialize_compatible(self, handler):
         value = handler(self)
-        for name in ('pipeline_prefix', 'pipeline_prompts', 'parent_collection_id', 'parent_run_id', 'upstream_manifest'):
+        for name in ('pipeline_prefix', 'pipeline_prompts', 'parent_collection_id', 'parent_run_id', 'upstream_manifest',
+                     'recovery_allowance_id'):
             if getattr(self, name) is None:
                 value.pop(name, None)
         return value
@@ -66,6 +68,12 @@ class ResearchContext(FrozenContract):
             raise ValueError('A follow-up requires both parent collection and run identifiers')
         if self.parent_collection_id == '' or self.parent_run_id == '':
             raise ValueError('Parent identifiers cannot be empty')
+        if self.recovery_allowance_id is not None:
+            if not self.recovery_allowance_id.strip() or not self.parent_run_id:
+                raise ValueError('Recovery requires its explicit allowance and analytical parent')
+        if self.plan.schema_version=='4' and (not self.recovery_allowance_id or self.upstream_manifest is not None
+                or self.parent_run_id!=self.plan.recovery_from_run_id):
+            raise ValueError('New recovery evidence requires its exact source parent and allowance')
         if self.upstream_manifest is not None:
             if (not self.parent_run_id or set(self.upstream_manifest) != {'manifest_hash','manifest'}
                     or digest(self.upstream_manifest['manifest']) != self.upstream_manifest['manifest_hash']
@@ -82,11 +90,13 @@ class ResearchContext(FrozenContract):
 
 def freeze_context(config: Configuration, context: ResearchContext) -> ResearchContext:
     """Select prompts once, before persistence; never change a saved context."""
-    if (config.schema_version in {'1.2','1.3'}) != (context.plan.schema_version == '3'):
+    if (config.schema_version in {'1.2','1.3'}) != (context.plan.schema_version in {'3','4'}):
         raise ValueError('Conditional scoring requires the explicit per-analogue legal source plan')
+    if context.plan.schema_version=='4' and config.schema_version!='1.3':
+        raise ValueError('The bounded source recovery requires milestone scoring')
     if context.upstream_manifest is not None and config.schema_version != '1.3':
         raise ValueError('Upstream inheritance requires the milestone revision contract')
-    if config.schema_version == '1.3' and context.upstream_manifest is None:
+    if config.schema_version == '1.3' and context.upstream_manifest is None and context.plan.schema_version!='4':
         raise ValueError('Milestone research requires the selected revision with frozen upstream sources')
     if context.pipeline_prefix is None:
         prefix, prompts = prompt_bundle(config.schema_version)
@@ -167,6 +177,11 @@ async def insert_research_run(conn, config: Configuration, context: ResearchCont
             raise ValueError('Follow-up requires a new assessment scope')
         if context.upstream_manifest is not None and context.plan.model_dump(mode='json') != parent['candidate']['plan']:
             raise ValueError('Factor revision must preserve the exact frozen source plan')
+        if context.recovery_allowance_id:
+            old=Configuration.model_validate(parent['parent_config'])
+            if (old.scenario!=config.scenario or old.criteria!=config.criteria or old.model!=config.model
+                    or old.market!=config.market):
+                raise ValueError('Recovery cannot change scenario, admission criteria or model')
     run_id = uid()
     await conn.execute('''INSERT INTO app.runs(id,study_id,config_json,config_hash,limit_micro,status,
         graph_version,state_schema_version,coordinator_thread_id)
@@ -209,6 +224,12 @@ async def _load_context(ledger):
         context = ResearchContext.model_validate(row['context'])
         if config.digest() != run['config_hash'] or context.openai_pricing.model != config.model:
             raise Conflict('Run configuration integrity mismatch')
+        if context.recovery_allowance_id:
+            member=await (await conn.execute('SELECT * FROM app.recovery_runs WHERE run_id=%s', (ledger.run_id,))).fetchone()
+            if (not member or member['allowance_id']!=context.recovery_allowance_id
+                    or member['context_hash']!=row['context_hash'] or member['config_hash']!=run['config_hash']
+                    or member['model_id']!=context.plan.seed.base_model_id or member['study_id']!=run['study_id']):
+                raise Conflict('Recovery context lacks its exact immutable allowance binding')
         if context.parent_collection_id is not None:
             parent = await _collection_parent(conn, context.parent_run_id, context.parent_collection_id)
             if parent['study_id'] != run['study_id'] or parent['model_id'] != context.plan.seed.base_model_id:

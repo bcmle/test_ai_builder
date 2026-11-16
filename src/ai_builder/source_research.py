@@ -62,8 +62,13 @@ class SearchQueryPlan(FrozenContract):
         return values
 
 
+RECOVERY_KAYAK_ID = '03b5d22868b44bbb975d3cfc01d46f93'
+RECOVERY_KAYAK_URLS = ('https://affiliates.kayak.com/', 'https://affiliates.kayak.com/deeplinks',
+                       'https://www.kayak.com/terms-of-use')
+
+
 class SourceResearchPlan(FrozenContract):
-    schema_version: Literal['1', '2', '3'] = '1'
+    schema_version: Literal['1', '2', '3', '4'] = '1'
     seed: ScopeSeed
     queries: tuple[SearchQueryPlan, ...] = Field(max_length=12)
     max_new_reads: int = Field(default=6, ge=1, le=24, strict=True)
@@ -75,13 +80,23 @@ class SourceResearchPlan(FrozenContract):
     supplement_reason: str | None = Field(default=None, min_length=1, max_length=2000)
     legal_analogues: tuple[LegalAnalogue, ...] = Field(default=(), max_length=8)
     reassessed_from_run_id: str | None = None
+    recovery_from_run_id: str | None = None
     legal_link_rounds: Literal[2] = 2
     legal_links_per_round: Literal[4] = 4
 
     @model_validator(mode='after')
     def version_bounds(self):
-        if self.schema_version != '3' and (self.legal_analogues or self.reassessed_from_run_id is not None):
+        if self.schema_version not in {'3','4'} and (self.legal_analogues or self.reassessed_from_run_id is not None):
             raise ValueError('Legal acquisition requires source plan version 3')
+        if self.schema_version == '4':
+            if (self.seed.base_model_id != RECOVERY_KAYAK_ID or not self.recovery_from_run_id
+                    or not self.recovery_from_run_id.strip() or len(self.legal_analogues)!=1
+                    or self.queries or self.priority_primary_urls != RECOVERY_KAYAK_URLS or self.max_new_reads != 3
+                    or self.derived_from_run_id or self.supplemented_from_run_id or self.reassessed_from_run_id
+                    or self.supplement_reason):
+                raise ValueError('Recovery source plan permits only the three frozen KAYAK documents')
+        elif self.recovery_from_run_id is not None:
+            raise ValueError('Recovery provenance requires source plan version 4')
         if self.schema_version == '3':
             if (not self.legal_analogues or len(self.queries) + len(self.legal_analogues) > 12
                     or self.derived_from_run_id is not None or self.supplemented_from_run_id is not None
@@ -108,7 +123,7 @@ class SourceResearchPlan(FrozenContract):
                     or not len(self.priority_primary_urls) <= self.max_new_reads <= 5
                     or not self.supplement_reason or not self.supplement_reason.strip()):
                 raise ValueError('Supplemental source plan requires a parent, one to five new URLs and no queries')
-        elif not self.queries and self.schema_version != '3':
+        elif not self.queries and self.schema_version not in {'3','4'}:
             raise ValueError('A source acquisition plan requires at least one query')
         urls = [canonical_url(url) for url in self.priority_primary_urls]
         if len(urls) != len(set(urls)):
@@ -126,7 +141,9 @@ class SourceResearchPlan(FrozenContract):
             value.pop('supplemented_from_run_id', None)
         if self.supplement_reason is None:
             value.pop('supplement_reason', None)
-        if self.schema_version != '3':
+        if self.recovery_from_run_id is None:
+            value.pop('recovery_from_run_id', None)
+        if self.schema_version not in {'3','4'}:
             value.pop('legal_analogues', None)
             value.pop('reassessed_from_run_id', None)
             value.pop('legal_link_rounds', None)
@@ -367,7 +384,7 @@ async def _read(ledger, plan, result, fetch_document, artifacts, parser):
         async with ledger.locked(ledger.run_id, fenced=True) as (conn, _, __):
             await conn.execute("UPDATE app.source_results SET disposition='excluded',reason='invalid_source_url' WHERE id=%s", (result['id'],))
         return
-    if plan.schema_version == '3':
+    if plan.schema_version in {'3','4'}:
         definition = result['query_definition']
         analogue = next((item for item in plan.legal_analogues
                          if item.analogue_id == definition.get('analogue_id')), None)
@@ -760,6 +777,80 @@ async def _initialize_supplemented_sources(ledger, plan, artifacts):
                             'retained_full_documents': True, 'new_search_calls': 0})
 
 
+async def verify_recovery_sources(conn, plan, artifacts, study_id):
+    """Read-only proof of the complete old KAYAK packet, including failed reads."""
+    parent = await (await conn.execute('SELECT * FROM app.runs WHERE id=%s', (plan.recovery_from_run_id,))).fetchone()
+    context = await (await conn.execute('SELECT * FROM app.research_contexts WHERE run_id=%s',
+                                        (plan.recovery_from_run_id,))).fetchone()
+    packets = await (await conn.execute('SELECT * FROM app.source_research WHERE run_id=%s',
+                                        (plan.recovery_from_run_id,))).fetchall()
+    if (not parent or parent['study_id']!=study_id or parent['status'] not in {'partial','completed'}
+            or not context or digest(context['context'])!=context['context_hash']
+            or len(packets)!=1 or packets[0]['state']!='frozen'):
+        raise Conflict('Recovery requires the intact frozen source parent in the same study')
+    if await (await conn.execute('''SELECT 1 FROM app.usage WHERE run_id=%s AND state IN ('reserved','unknown')
+        UNION ALL SELECT 1 FROM app.provider_operations WHERE run_id=%s AND state<>'completed'
+        UNION ALL SELECT 1 FROM app.run_leases WHERE run_id=%s AND expires_at>clock_timestamp() LIMIT 1''',
+        (parent['id'],parent['id'],parent['id']))).fetchone():
+        raise Conflict('Recovery source parent has active or unresolved operations')
+    source=packets[0]
+    old=SourceResearchPlan.model_validate(source['plan'])
+    if (old.schema_version!='3' or old.legal_analogues!=plan.legal_analogues
+            or old.seed.base_model_id!=plan.seed.base_model_id
+            or old.seed.neutral_model_description!=plan.seed.neutral_model_description
+            or old.seed.scope_id==plan.seed.scope_id or old.seed.variant_id==plan.seed.variant_id
+            or source['plan_hash']!=digest(source['plan']) or context['context']['plan']!=source['plan']
+            or source['packet_hash']!=digest({'scope':source['packet'],'gaps':source['gaps']})):
+        raise Conflict('Recovery source plan differs from its exact parent identity')
+    rows=await _result_rows(conn,parent['id'],old.seed.scope_id)
+    verified=_materialize(old,rows,artifacts)
+    if (verified.scope.model_dump(mode='json')!=source['packet']
+            or [g.model_dump(mode='json') for g in verified.gaps]!=source['gaps']
+            or any(row['query_state']!='succeeded' or row.get('disposition')=='pending' for row in rows)
+            or any(r['execution_state']!='completed' for r in verified.scope.legal_source_reviews)):
+        raise Conflict('Recovery parent documents or completed acquisition receipts differ')
+    return verified, rows
+
+
+async def _initialize_recovery_sources(ledger, plan, artifacts):
+    async with ledger.locked(ledger.run_id,fenced=True) as (conn,_,run):
+        if await (await conn.execute('SELECT 1 FROM app.source_research WHERE run_id=%s', (ledger.run_id,))).fetchone():
+            return
+        bound=await (await conn.execute('SELECT * FROM app.recovery_runs WHERE run_id=%s', (ledger.run_id,))).fetchone()
+        if not bound or bound['model_id']!=plan.seed.base_model_id or bound['study_id']!=run['study_id']:
+            raise Conflict('Source recovery must belong to its immutable two-model allowance')
+        _,rows=await verify_recovery_sources(conn,plan,artifacts,run['study_id'])
+        value=plan.model_dump(mode='json')
+        await conn.execute('INSERT INTO app.source_research(run_id,scope_id,plan_hash,plan) VALUES (%s,%s,%s,%s)',
+                           (ledger.run_id,plan.seed.scope_id,digest(value),Jsonb(value)))
+        groups={}
+        for row in rows: groups.setdefault(row['query_identity'],[]).append(row)
+        if len(groups)+1>64: raise Conflict('Recovery source queue bound exceeded')
+        for index,(old_query,items) in enumerate(groups.items()):
+            first=items[0]; query_id=uid()
+            definition={**first['query_definition'],'retained_query_id':old_query,
+                        'retained_from_run_id':plan.recovery_from_run_id}
+            await conn.execute('''INSERT INTO app.source_queries
+                (id,run_id,scope_id,query_index,operation_key,query,state,completed_at)
+                VALUES (%s,%s,%s,%s,%s,%s,'succeeded',%s)''',
+                (query_id,ledger.run_id,plan.seed.scope_id,index,'recovery-retained:'+old_query,
+                 Jsonb(definition),first['query_completed_at']))
+            for row in items:
+                if row['id'] is None: continue
+                await conn.execute('''INSERT INTO app.source_results
+                    (id,query_id,result_rank,url,title,snippet,disposition,reason,snapshot_id)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+                    (uid(),query_id,row['result_rank'],row['url'],row['title'],row['snippet'],
+                     row['disposition'],row['reason'],row['snapshot_id']))
+        await _queue(ledger,conn,plan,len(groups),{'kind':'legal_official_urls',
+            'analogue_id':plan.legal_analogues[0].analogue_id,'urls':list(plan.priority_primary_urls)},
+            urls=plan.priority_primary_urls)
+        await ledger.event(conn,ledger.run_id,'recovery_source_plan_saved',{
+            'source_run_id':plan.recovery_from_run_id,'plan_hash':digest(value),
+            'retained_query_ids':list(groups),'new_primary_urls':list(plan.priority_primary_urls),
+            'new_search_calls':0,'retained_full_documents':True})
+
+
 def _materialize(plan, rows, artifacts):
     """Verify every retained artifact, including unsuccessful source reads."""
     documents, gaps, seen = [], [], set()
@@ -797,10 +888,22 @@ def _materialize(plan, rows, artifacts):
             gaps.append(ResearchGap(code=result['reason'] or 'source_unavailable', query_id=result['query_identity'],
                                     result_id=result['id'], url=result['url'], snapshot_id=result['snapshot_id']))
     extra = {}
-    if plan.schema_version == '3':
-        extra['legal_source_reviews'] = materialize_legal_reviews(plan.legal_analogues, rows)
+    if plan.schema_version in {'3','4'}:
+        legal_rows=[{**row,'query_identity':row['query_definition'].get('retained_query_id',row['query_identity'])}
+                    for row in rows] if plan.schema_version=='4' else rows
+        extra['legal_source_reviews'] = materialize_legal_reviews(plan.legal_analogues, legal_rows)
+        if plan.schema_version=='4':
+            for review in extra['legal_source_reviews']:
+                review['retained_acquisition_run_id']=plan.recovery_from_run_id
     scope = ScopePacket(**plan.seed.model_dump(), documents=documents, **extra)
     return PreparedScope(scope, tuple(gaps))
+
+
+def _require_recovery_document(plan, rows):
+    if plan.schema_version=='4' and not any(
+            not r['query_definition'].get('retained_from_run_id') and r.get('snapshot_state')=='succeeded'
+            and r.get('disposition') in {'read','duplicate'} and r.get('text_ref') for r in rows):
+        raise Conflict('Recovery sources yielded no readable new official document; no model call is allowed')
 
 
 async def prepare_scope(ledger, plan: SourceResearchPlan, search_factory, fetch_document,
@@ -811,7 +914,9 @@ async def prepare_scope(ledger, plan: SourceResearchPlan, search_factory, fetch_
     search_factory(key) returns a TavilyAdapter using this ledger and key.
     fetch_document(url) uses plan.fetch_limits(); it performs no implicit retry.
     """
-    if plan.schema_version == '3':
+    if plan.schema_version == '4':
+        await _initialize_recovery_sources(ledger,plan,artifacts)
+    elif plan.schema_version == '3':
         await _initialize_legal_sources(ledger, plan, artifacts)
     elif plan.derived_from_run_id is not None:
         await _initialize_retained_sources(ledger, plan, artifacts)
@@ -819,9 +924,11 @@ async def prepare_scope(ledger, plan: SourceResearchPlan, search_factory, fetch_
         await _initialize_supplemented_sources(ledger, plan, artifacts)
     saved = await _initialize(ledger, plan)
     if saved:
-        verified = _materialize(plan, await _results(ledger, plan.seed.scope_id), artifacts)
+        rows=await _results(ledger, plan.seed.scope_id)
+        verified = _materialize(plan, rows, artifacts)
         if verified != saved:
             raise Conflict('Frozen scope differs from retained source receipts')
+        _require_recovery_document(plan,rows)
         return saved
     await _search(ledger, plan, search_factory)
     for result in await _results(ledger, plan.seed.scope_id):
@@ -842,8 +949,10 @@ async def prepare_scope(ledger, plan: SourceResearchPlan, search_factory, fetch_
         for result in await _results(ledger, plan.seed.scope_id):
             if result['id'] is not None and result['disposition'] == 'pending' and result['reason'] is None:
                 await _read(ledger, plan, result, fetch_document, artifacts, parser)
-    prepared = _materialize(plan, await _results(ledger, plan.seed.scope_id), artifacts)
-    if plan.schema_version == '3' and any(review['execution_state'] != 'completed'
+    rows=await _results(ledger, plan.seed.scope_id)
+    prepared = _materialize(plan, rows, artifacts)
+    _require_recovery_document(plan,rows)
+    if plan.schema_version in {'3','4'} and any(review['execution_state'] != 'completed'
                                          for review in prepared.scope.legal_source_reviews):
         async with ledger.locked(ledger.run_id, fenced=True) as (conn, _, __):
             await _pause(ledger, conn, 'legal_source_work_incomplete',
