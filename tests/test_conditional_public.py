@@ -252,3 +252,101 @@ def test_prior_inline_assessment_must_match_identity_and_scenario(config, tmp_pa
         value['scenario']['jurisdiction'] = 'Another jurisdiction'
         publish_snapshot(tmp_path, value)
         assert 'Previous assessment —' not in client.get('/models/model-a').text
+
+
+def test_known_legal_document_details_keep_literal_values_and_evidence(config, tmp_path):
+    result = conditional_result()
+    document = result.state['card']['legal_reviews'][0]['documents'][0]
+    values = {'version': 'Version 2026.11', 'effective_date': 'November 15, 2026',
+              'supplier_legal_entity': 'Example Software Limited'}
+    document.update(**values, metadata_evidence={
+        field: dict(evidence_id='evidence-a', source_snapshot_id='snapshot-a',
+                    excerpt=f'The document states {value}.', locator=f'Legal header: {field}',
+                    private_audit_ref='PRIVATE-METADATA-AUDIT') for field, value in values.items()},
+        metadata_unknown_reasons={'internal_private_field': 'PRIVATE-UNKNOWN-REASON'})
+    model = public_model(result, metadata(), config)
+    projected = model['legal_reviews'][0]['documents'][0]
+    for field, value in values.items():
+        assert projected[field] == value
+        assert value in projected['metadata_evidence'][field]['excerpt']
+        assert projected['metadata_evidence'][field]['source_id'] == 'snapshot-a'
+    assert projected['metadata_unknown_reasons'] == {}
+    assert 'PRIVATE-' not in json.dumps(model)
+    publish_snapshot(tmp_path, versioned_snapshot([model]))
+    with TestClient(create_app(data_dir=tmp_path, database_url='')) as client:
+        detail = client.get('/models/model-a').text
+        for value in values.values():
+            assert value in detail
+        assert 'Supplier legal entity' in detail and 'Evidence for document details' in detail
+        assert 'Legal header: effective_date' in detail
+        assert 'PRIVATE-' not in detail
+
+
+def test_unknown_legal_document_details_show_reasons_without_invented_values(config, tmp_path):
+    result = conditional_result()
+    document = result.state['card']['legal_reviews'][0]['documents'][0]
+    reasons = {'version': 'No version label appears in the read text.',
+               'effective_date': 'The text states a revision date, but no effective date.',
+               'supplier_legal_entity': 'The contracting entity is not identified in this document.'}
+    document.update(version=None, effective_date=None, supplier_legal_entity=None,
+                    metadata_evidence={}, metadata_unknown_reasons=reasons)
+    model = public_model(result, metadata(), config)
+    projected = model['legal_reviews'][0]['documents'][0]
+    assert projected['metadata_unknown_reasons'] == reasons
+    assert all(projected[field] is None for field in reasons)
+    publish_snapshot(tmp_path, versioned_snapshot([model]))
+    with TestClient(create_app(data_dir=tmp_path, database_url='')) as client:
+        detail = client.get('/models/model-a').text
+        for reason in reasons.values():
+            assert reason in detail
+        assert 'Evidence for document details' not in detail
+        assert detail.count('Not established</span>') == 3
+
+
+def test_public_metadata_rejects_known_values_without_matching_document_quotes(config):
+    model = public_model(conditional_result(), metadata(), config)
+    document = model['legal_reviews'][0]['documents'][0]
+    document['version'] = 'v2'
+    with pytest.raises(ValueError, match='requires evidence from that document'):
+        Model.model_validate(model)
+    document['metadata_evidence'] = {'version': {'source_id': 'another-document', 'excerpt': 'Version v2', 'locator': 'Header'}}
+    with pytest.raises(ValueError, match='requires evidence from that document'):
+        Model.model_validate(model)
+
+
+def test_metadata_quote_preserves_long_legal_entity_literal(config):
+    result = conditional_result()
+    document = result.state['card']['legal_reviews'][0]['documents'][0]
+    name = 'Example ' + 'International ' * 27 + 'Limited'
+    quote = f'The supplier legal entity for this agreement is {name}.'
+    assert 320 < len(quote) < 600
+    document.update(supplier_legal_entity=name, metadata_evidence={'supplier_legal_entity': dict(
+        source_snapshot_id='snapshot-a', evidence_id='evidence-a', excerpt=quote, locator='Parties')})
+    projected = public_model(result, metadata(), config)['legal_reviews'][0]['documents'][0]
+    assert projected['supplier_legal_entity'] == name
+    assert projected['metadata_evidence']['supplier_legal_entity']['excerpt'] == quote
+
+
+def test_each_document_shows_substantive_applicability_or_explicit_gap(config, tmp_path):
+    result = conditional_result()
+    review = result.state['card']['legal_reviews'][0]
+    review['documents'][0].update(applicability_finding='Our proposed software role includes a separate customer data obligation.',
+        applicability_evidence=dict(evidence_id='evidence-a', source_snapshot_id='snapshot-a',
+            excerpt='Customers control their account data.', locator='Customer obligations', private_ref='PRIVATE-FINDING-AUDIT'),
+        applicability_unknown_reason=None)
+    review['documents'].append(dict(url='https://example.com/privacy', document_type='privacy', title='Privacy policy',
+        disposition='inaccessible', version=None, effective_date=None, supplier_legal_entity=None,
+        metadata_unknown_reasons={field:'document_not_read' for field in ('version','effective_date','supplier_legal_entity')},
+        applicability_finding=None, applicability_evidence=None, applicability_unknown_reason='document_not_read'))
+    model = public_model(result, metadata(), config)
+    assert len(model['legal_reviews'][0]['documents']) == 2
+    assert 'PRIVATE-' not in json.dumps(model)
+    publish_snapshot(tmp_path, versioned_snapshot([model]))
+    with TestClient(create_app(data_dir=tmp_path, database_url='')) as client:
+        detail = client.get('/models/model-a').text
+        assert 'Our proposed software role includes a separate customer data obligation.' in detail
+        assert 'Customers control their account data.' in detail
+        assert 'Evidence for this applicability finding' in detail
+        assert 'not an approval of our legal status' in detail
+        assert 'This document was not read.' in detail
+        assert 'document_not_read' not in detail

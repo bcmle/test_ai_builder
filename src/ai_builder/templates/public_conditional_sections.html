@@ -25,7 +25,26 @@
   <details class="legal-review"{% if loop.first %} open{% endif %}><summary><strong>{{ review.analogue_name or review.analogue_id }}</strong><span class="result">{{ review.execution_state|replace('_',' ')|title }}{% if review.coverage %} · {{ review.coverage|replace('_',' ')|title }}{% endif %}</span><span class="expand-icon" aria-hidden="true">+</span></summary><div class="legal-review-body">
     {% if review.supplier_role %}<h4>The supplier’s role</h4><p>{{ review.supplier_role }}</p>{% endif %}
     {% if review.our_role_applicability %}<h4>Applicability to our proposed role</h4><p>{{ review.our_role_applicability }}</p>{% endif %}
-    {% if review.documents %}<h4>Documents discovered</h4><ul class="legal-documents">{% for document in review.documents %}<li><div>{% if document.url %}<a href="{{ document.url }}" target="_blank" rel="noopener noreferrer">{{ document.title or document.document_type|replace('_',' ')|title }} ↗</a>{% else %}{{ document.title or document.document_type|replace('_',' ')|title }}{% endif %}<span class="small muted">{{ document.document_type|replace('_',' ') }} · {{ document.disposition|replace('_',' ') }}{% if document.effective_date %} · Effective {{ document.effective_date|date }}{% endif %}{% if document.version %} · Version {{ document.version }}{% endif %}{% if document.source_id %} · <a href="#source-{{ document.source_id }}">Saved source</a>{% endif %}</span>{% if document.reason %}<p class="small muted">{{ document.reason }}</p>{% endif %}</div></li>{% endfor %}</ul>{% endif %}
+    {% if review.documents %}<h4>Documents discovered</h4><ul class="legal-documents">
+    {% for document in review.documents %}<li><div>
+      {% if document.url %}<a href="{{ document.url }}" target="_blank" rel="noopener noreferrer">{{ document.title or document.document_type|replace('_',' ')|title }} ↗</a>{% else %}{{ document.title or document.document_type|replace('_',' ')|title }}{% endif %}
+      <span class="small muted">{{ document.document_type|replace('_',' ') }} · {{ document.disposition|replace('_',' ') }}{% if document.source_id %} · <a href="#source-{{ document.source_id }}">Saved source</a>{% endif %}</span>
+      {% if document.reason %}<p class="small muted">{{ document.reason }}</p>{% endif %}
+      <dl class="legal-document-metadata">
+      {% for field, label in [('version','Version'), ('effective_date','Effective date'), ('supplier_legal_entity','Supplier legal entity')] %}
+        <div><dt>{{ label }}</dt><dd>{% if document[field] %}{{ document[field] }}{% else %}<span class="muted">Not established</span><span class="metadata-unknown-reason">{% set reason = document.metadata_unknown_reasons.get(field) %}{{ 'This document was not read.' if reason == 'document_not_read' else reason or 'Not established in this assessment.' }}</span>{% endif %}</dd></div>
+      {% endfor %}
+      </dl>
+      <div class="document-applicability"><p><strong>Applicability to our proposed role:</strong> {{ document.applicability_finding or 'Not established' }}</p>
+        {% if document.applicability_finding %}<p class="small muted">This is the assessment’s interpretation of the document, not an approval of our legal status.</p>{% else %}<p class="small muted">{{ 'This document was not read.' if document.applicability_unknown_reason == 'document_not_read' else document.applicability_unknown_reason or 'Not assessed for this document in this revision.' }}</p>{% endif %}
+        {% if document.applicability_evidence %}{% set ref = document.applicability_evidence %}<details class="legal-metadata-evidence"><summary>Evidence for this applicability finding</summary><blockquote><p>“{{ ref.excerpt }}”</p><footer><a href="#source-{{ ref.source_id }}">{{ sources[ref.source_id].title or 'Saved document' }}</a>{% if ref.locator %} · {{ ref.locator }}{% endif %}</footer></blockquote></details>{% endif %}
+      </div>
+      {% if document.metadata_evidence %}<details class="legal-metadata-evidence"><summary>Evidence for document details</summary>
+        {% for field, label in [('version','Version'), ('effective_date','Effective date'), ('supplier_legal_entity','Supplier legal entity')] %}
+        {% set ref = document.metadata_evidence.get(field) %}{% if ref %}<p class="small muted">{{ label }} · stated in this document</p><blockquote><p>“{{ ref.excerpt }}”</p><footer><a href="#source-{{ ref.source_id }}">{{ sources[ref.source_id].title or 'Saved document' }}</a>{% if ref.locator %} · {{ ref.locator }}{% endif %}</footer></blockquote>{% endif %}
+        {% endfor %}
+      </details>{% endif %}
+    </div></li>{% endfor %}</ul>{% endif %}
     {% for clause in review.clauses %}<blockquote><p>“{{ clause.excerpt }}”</p><footer><a href="#source-{{ clause.source_id }}">{{ sources[clause.source_id].title or 'Evidence source' }}</a>{% if clause.locator %} · {{ clause.locator }}{% endif %}</footer></blockquote><p>{{ clause.finding }}</p>{% endfor %}
     {% if review.gaps %}<div class="legal-gaps"><h4>Coverage gaps</h4><ul>{% for gap in review.gaps %}<li>{{ gap }}</li>{% endfor %}</ul></div>{% endif %}
     {% if review.search_actions %}<details class="legal-search"><summary>Search and reading activity · {{ review.search_actions|length }} actions</summary><ul>{% for action in review.search_actions %}<li>{{ action }}</li>{% endfor %}</ul></details>{% endif %}

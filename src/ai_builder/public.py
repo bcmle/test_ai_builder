@@ -36,6 +36,7 @@ STAGES = {'research': 'Criteria research', 'applicability': 'Independent applica
           'verifier': 'Independent verifier', 'reconciliation': 'Risk reconciliation',
           'factors': 'Factor assessment', 'factor_validation': 'Factor premise verification',
           'card_validation': 'Publication checks', 'scoring': 'Scoring'}
+LEGAL_METADATA_FIELDS = ('version', 'effective_date', 'supplier_legal_entity')
 
 
 def safe_url(value):
@@ -173,6 +174,12 @@ class EligibilityCondition(PublicContract):
     source_ids: list[str] = Field(default_factory=list)
 
 
+class LegalMetadataRef(SourceRef):
+    # Metadata may name a contracting entity longer than a normal source chip;
+    # preserve the complete validated quote instead of cutting its literal value.
+    excerpt: str = Field(max_length=600)
+
+
 class LegalDocument(PublicContract):
     url: str | None = None
     title: str | None = None
@@ -181,12 +188,41 @@ class LegalDocument(PublicContract):
     source_id: str | None = None
     effective_date: str | None = None
     version: str | None = None
+    supplier_legal_entity: str | None = None
+    metadata_evidence: dict[Literal['version', 'effective_date', 'supplier_legal_entity'], LegalMetadataRef] = Field(default_factory=dict)
+    metadata_unknown_reasons: dict[Literal['version', 'effective_date', 'supplier_legal_entity'], str] = Field(default_factory=dict)
+    applicability_finding: str | None = None
+    applicability_evidence: SourceRef | None = None
+    applicability_unknown_reason: str | None = None
     reason: str | None = None
 
     @field_validator('url')
     @classmethod
     def checked_url(cls, value):
         return safe_url(value)
+
+    @model_validator(mode='after')
+    def metadata_sources(self):
+        for field in LEGAL_METADATA_FIELDS:
+            value, ref = getattr(self, field), self.metadata_evidence.get(field)
+            if value is not None:
+                if not ref or not self.source_id or ref.source_id != self.source_id or not ref.excerpt or not ref.locator:
+                    raise ValueError('Known legal document metadata requires evidence from that document')
+                if value not in ref.excerpt:
+                    raise ValueError('Known metadata value must appear in its published quotation')
+                if field in self.metadata_unknown_reasons:
+                    raise ValueError('Known metadata cannot also have an unknown reason')
+            elif ref:
+                raise ValueError('Unknown legal metadata cannot claim supporting evidence')
+        if self.applicability_finding is not None:
+            ref = self.applicability_evidence
+            if not ref or not self.source_id or ref.source_id != self.source_id or not ref.excerpt or not ref.locator:
+                raise ValueError('Document applicability requires evidence from that document')
+            if self.applicability_unknown_reason:
+                raise ValueError('Assessed applicability cannot also be unknown')
+        elif self.applicability_evidence:
+            raise ValueError('Unknown applicability cannot claim supporting evidence')
+        return self
 
 
 class LegalClause(SourceRef):
@@ -364,12 +400,28 @@ def _legal_reviews(reviews, known_sources, source_metadata):
         for document in review.get('documents', []):
             source_id = document.get('snapshot_id') or document.get('source_snapshot_id')
             details = source_metadata.get(source_id) or {}
+            metadata_refs = {}
+            for field in LEGAL_METADATA_FIELDS:
+                ref = (document.get('metadata_evidence') or {}).get(field) or {}
+                if ref.get('source_snapshot_id') in known_sources:
+                    metadata_refs[field] = dict(source_id=ref['source_snapshot_id'], excerpt=ref.get('excerpt') or '',
+                                                locator=ref.get('locator'))
+            applicability_ref = document.get('applicability_evidence') or {}
+            public_applicability_ref = (dict(source_id=applicability_ref['source_snapshot_id'],
+                excerpt=_clip(applicability_ref.get('excerpt')), locator=applicability_ref.get('locator'))
+                if applicability_ref.get('source_snapshot_id') in known_sources else None)
             documents.append(dict(url=safe_url(document.get('url')),
                 title=document.get('title') or details.get('title'),
                 document_type=document.get('document_type') or 'other_legal',
                 disposition=document.get('disposition') or ('read' if source_id in known_sources else 'inaccessible'),
                 source_id=source_id if source_id in known_sources else None,
-                effective_date=document.get('effective_date'), version=document.get('version'), reason=document.get('reason')))
+                effective_date=document.get('effective_date'), version=document.get('version'),
+                supplier_legal_entity=document.get('supplier_legal_entity'), metadata_evidence=metadata_refs,
+                applicability_finding=document.get('applicability_finding'),
+                applicability_evidence=public_applicability_ref,
+                applicability_unknown_reason=document.get('applicability_unknown_reason'),
+                metadata_unknown_reasons={key: str(value) for key, value in (document.get('metadata_unknown_reasons') or {}).items()
+                                          if key in LEGAL_METADATA_FIELDS and value}, reason=document.get('reason')))
         actions = []
         for action in review.get('search_actions', []):
             if isinstance(action, str):
