@@ -98,6 +98,91 @@ def test_factor_neutral_projection_resumes_cached_rejection_and_crash_without_re
     asyncio.run(scenario())
 
 
+def test_saved_three_projection_candidates_replay_with_identical_packets_and_no_new_repair_charge(monkeypatch):
+    """Reproduce the old heading rejection, then recover the third paid candidate."""
+    from collections import Counter
+    from pathlib import Path
+    import re
+    from ai_builder.config import load_config
+    import ai_builder.domain as domain
+    import ai_builder.pipeline as pipeline
+    from test_conditional_pipeline import ProjectionRoles, conditional_packet
+
+    old_presentation = re.compile(
+        r'(^|(?<=[.;:\n]))\s*(?:the\s+)?proposed\s+(?:stop\s+rule|test|plan|scenario|procedure|team)'
+        r'(?:\s+(?:is\s+to|assumes?|includes?|begins?|states?|describes?))?\s*'
+        r'|(^|(?<=[.;:\n]))\s*(?:the\s+)?plan\s+is\s+to\s*'
+        r'|Unverified scenario premises:\s*'
+        r'|^\s*First action(?=\s+(?:on\s+day|:)|:)', re.I)
+
+    class SavedCandidates(ProjectionRoles):
+        async def generate(self,role,request,schema,key):
+            result = await super().generate(role,request,schema,key)
+            if role=='factors':
+                result.claims[0].assumptions[-1] = 'Record outreach routes and responses. ' + result.claims[0].assumptions[-1]
+                self.saved_factors = result.model_dump(mode='json')
+            if role=='repair' and request.get('output_correction',{}).get('attempt',0)<2:
+                # The first two candidates contain genuine drift and must stay
+                # rejected after the presentation-only validator correction.
+                for rewrite in result['rewrites']:
+                    rewrite['neutral_text'] = rewrite['neutral_text'].replace('external partner','external supplier')
+                for item in result['coverage']:
+                    if item['retained_excerpt']:
+                        item['retained_excerpt'] = item['retained_excerpt'].replace('external partner','external supplier')
+            return result
+
+    async def scenario():
+        await migrate(DSN)
+        config = load_config(Path(__file__).parents[1]/'config/conditional-config.json')
+        scope = conditional_packet()
+        async with execution_pool(DSN) as pool:
+            ledger,_,_ = await setup(pool,config)
+            fixture,paid = SavedCandidates(),[]
+            prefix,prompts = pipeline.prompt_bundle('1.2')
+            async def handler(request):
+                body = json.loads(request.content)
+                role = next(name for name,prompt in prompts.items() if body['instructions'].startswith(prefix+prompt))
+                packet = json.loads(body['input'][0]['content'])
+                schema = getattr(pipeline,body['text']['format']['name'])
+                result = await fixture.generate(role,packet,schema,'fixture-http')
+                value = result.model_dump(mode='json') if hasattr(result,'model_dump') else result
+                paid.append(role)
+                return httpx.Response(200,json=model_result(text=json.dumps(value)))
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                roles = ModelRoles(ledger,pricing(),'fixture',
+                    {role:dict(reasoning_effort='low',max_output_tokens=4096) for role in PROMPTS},
+                    purpose='eval',client=client,prompt_prefix=prefix,prompts=prompts)
+                with monkeypatch.context() as old_runtime:
+                    old_runtime.setattr(domain,'_PRESENTATION',old_presentation)
+                    with pytest.raises(ValueError,match='Neutral repair changed an operational dependency, number, time, negation or modality'):
+                        await execute_scope(ledger,config,scope,roles)
+                baseline = Counter(paid)
+                assert baseline['repair']==3 and baseline['research']==baseline['critic']==baseline['factors']==1
+                before = await ledger.summary(ledger.run_id)
+                assert before['reserved_micro']==before['unknown_micro']==0
+                async with pool.connection() as conn:
+                    saved_inputs = await (await conn.execute("SELECT payload FROM app.events WHERE run_id=%s AND kind='role_input' AND payload->>'role'='repair' ORDER BY id",(ledger.run_id,))).fetchall()
+                    saved_responses = await (await conn.execute("SELECT operation_key,response FROM app.provider_operations WHERE run_id=%s AND operation_key LIKE %s ORDER BY operation_key",(ledger.run_id,'%:repair:%'))).fetchall()
+                assert len(saved_inputs)==len(saved_responses)==3
+                async with ledger.locked(ledger.run_id,fenced=True) as (conn,_,__):
+                    await conn.execute("UPDATE app.runs SET status='running',control_version=control_version+1 WHERE id=%s",(ledger.run_id,))
+                    await ledger.event(conn,ledger.run_id,'explicit_test_recovery',{'policy':'factor-neutral-projection-repair-1'})
+                state = await execute_scope(ledger,config,scope,roles,resume=True)
+                assert state['card']['score']['status']=='conditional' and state['factors']==fixture.saved_factors
+                assert Counter(paid)-baseline == Counter(neutrality=1,verifier=1)
+                after = await ledger.summary(ledger.run_id)
+                assert len(after['requests'])-len(before['requests'])==2
+                assert after['reserved_micro']==after['unknown_micro']==0
+                async with pool.connection() as conn:
+                    all_inputs = await (await conn.execute("SELECT payload FROM app.events WHERE run_id=%s AND kind='role_input' AND payload->>'role'='repair' ORDER BY id",(ledger.run_id,))).fetchall()
+                    retained_responses = await (await conn.execute("SELECT operation_key,response FROM app.provider_operations WHERE run_id=%s AND operation_key LIKE %s ORDER BY operation_key",(ledger.run_id,'%:repair:%'))).fetchall()
+                assert all_inputs==saved_inputs+saved_inputs  # Includes keys, correction errors, source units and frozen packets.
+                assert retained_responses==saved_responses
+                assert (await execute_scope(ledger,config,scope,roles,resume=True))['card']==state['card']
+                assert await ledger.summary(ledger.run_id)==after
+    asyncio.run(scenario())
+
+
 def model_roles(ledger, client):
     return ModelRoles(ledger, pricing(), 'fixture',
                       {role:dict(reasoning_effort='low',max_output_tokens=4096) for role in PROMPTS},

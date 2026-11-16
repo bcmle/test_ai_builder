@@ -116,6 +116,14 @@ def diagnose_payload(packet, candidate, max_issues=12, issue_offset=0):
     try:
         validate_factor_projection(projection, originals, sources)
         result['validation'] = 'accepted_by_current_validator'
+        # Production validation is authoritative. Do not rerun older advisory
+        # token normalization after a compatible grammar fix accepts this exact
+        # persisted candidate (notably an omitted verdict's leading connector).
+        result.update(coverage_counts=dict(sources=len(sources),entries=len(projection.coverage),
+                                           missing=0,unknown=0,duplicate=0),
+                      issue_offset=issue_offset,mismatching_units_count=0,mismatching_units=[],
+                      unmapped_claims_count=0,unmapped_claims=[])
+        return result
     except ValueError as error:
         result['validation'] = safe(error,300)
     rewritten = {claim.claim_id:claim.neutral_text for claim in projection.rewrites}

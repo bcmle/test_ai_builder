@@ -467,3 +467,42 @@ the actual verified wording from the author's original rationale. Local validati
 passed 422 tests with one expected macOS-only memory-limit skip; PostgreSQL
 regressions cover paid response reuse, interruption after the repair receipt,
 completed replay and unchanged legacy serialization.
+
+PR #9 merged as `e3dfccc123aeb4acca6793e35deca519e0ed8d14`.
+[Release 43800254162](https://github.com/bcmle/test_ai_builder/actions/runs/43800254162)
+passed 423 Linux tests and deployed image
+`sha256:551b54fcbfc547da254bcc0c1db817ceb2b3a5f9df533b66a420e336bf2576de`
+at 03:53 UTC. Exact-image smoke, restart, runtime permissions, restore and
+encrypted export checks passed; the encrypted off-server backup was uploaded.
+The server's installed OCI revision was independently checked against the merge
+commit before resumption.
+
+At approximately 03:57 UTC the same collection resumed with `--retry-failed` in
+`ai-builder-reassessment-v152-repair1`, using the deployed image and existing
+credential files. The original container/logs were retained. The worker log
+confirmed Electronic Signature Workflows at position one in the existing queue;
+provider credentials were then unset from the operator shell. No frozen queue,
+budget or research inputs were replaced.
+
+The live continuation exposed overly narrow presentation recognition in the
+validator: all three saved Docusign repair candidates were rejected before the
+neutrality recheck. The worker was again quiesced at a verified boundary at
+04:12:41 UTC. All 246 physical requests were settled, with $41.848350 calculated
+cumulative spending, no active leases and no open clocks. No new score had been
+published. The paid replies remain stored for revalidation.
+
+Read-only diagnostics of the last Docusign candidate found 48 covered source
+units and eleven canonical-text mismatches, with no missing coverage, extra
+assertions, or quantity/modality/negation mismatches. The mismatches were a
+First-action heading within a paragraph, an exact proposed-plan prefix after a
+comma, and a leading conjunction following an explicitly omitted author verdict.
+The original licensing prohibition and launch conditions remained present.
+Spec `7856158` clarifies these narrow presentation cases before code changes;
+frozen input packets, paid operation keys and existing correction diagnostics
+must remain unchanged.
+
+The narrow correction passed 440 local tests with one expected macOS-only skip.
+Its PostgreSQL regression replays three already paid repair responses with the
+same packet bodies, operation keys and correction diagnostics; genuine role
+changes remain rejected while the presentation-only candidate is accepted.
+Only the required neutrality recheck and verifier are then newly billed.
