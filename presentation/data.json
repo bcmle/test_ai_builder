@@ -1,0 +1,490 @@
+{
+  "retrieved_at": "2026-11-16T12:27:03.826838+00:00",
+  "source_url": "https://ai-builder-lab.com/runs/1394ce6bcce54e07aa9eb8c9d3c81106?format=json",
+  "run_id": "1394ce6bcce54e07aa9eb8c9d3c81106",
+  "revision_id": "recovery-3cb641b6a0950f862d7ac33ecc9d1d3a",
+  "published_at": "2026-11-16T11:45:49.412685+00:00",
+  "source_sha256": "d57a96c421d8c8725ff00f704b39fb8aca2da82a610cf9ed90b49c9550e7a461",
+  "catalog_count": 20,
+  "statuses": {
+    "conditional": 5,
+    "needs_review": 15
+  },
+  "scenario": {
+    "team_size": 2,
+    "business_budget_usd": "15000",
+    "days": 90,
+    "jurisdiction": "United States (federal scope; state-specific requirements unresolved where applicable)"
+  },
+  "criteria": [
+    {
+      "id": "F01",
+      "label": "Законность деятельности",
+      "passed": 0,
+      "unknown": 20,
+      "failed": 0,
+      "missing": 0
+    },
+    {
+      "id": "F02",
+      "label": "Полностью онлайн",
+      "passed": 10,
+      "unknown": 10,
+      "failed": 0,
+      "missing": 0
+    },
+    {
+      "id": "F03",
+      "label": "Без собственной спецлицензии",
+      "passed": 0,
+      "unknown": 20,
+      "failed": 0,
+      "missing": 0
+    },
+    {
+      "id": "F04",
+      "label": "Повторяющаяся выручка",
+      "passed": 11,
+      "unknown": 9,
+      "failed": 0,
+      "missing": 0
+    },
+    {
+      "id": "F05",
+      "label": "Без кредитного риска",
+      "passed": 9,
+      "unknown": 11,
+      "failed": 0,
+      "missing": 0
+    },
+    {
+      "id": "F06",
+      "label": "Без страхового риска",
+      "passed": 9,
+      "unknown": 11,
+      "failed": 0,
+      "missing": 0
+    },
+    {
+      "id": "F07",
+      "label": "Без хранения чужих средств",
+      "passed": 9,
+      "unknown": 11,
+      "failed": 0,
+      "missing": 0
+    },
+    {
+      "id": "F08",
+      "label": "Не трейдинг",
+      "passed": 10,
+      "unknown": 10,
+      "failed": 0,
+      "missing": 0
+    },
+    {
+      "id": "F09",
+      "label": "Не государственный сервис",
+      "passed": 9,
+      "unknown": 11,
+      "failed": 0,
+      "missing": 0
+    },
+    {
+      "id": "F10",
+      "label": "Аналог от $300 млн",
+      "passed": 8,
+      "unknown": 12,
+      "failed": 0,
+      "missing": 0
+    }
+  ],
+  "scored_models": [
+    {
+      "id": "23c49394cadf4e0ab3b7f78d9d70373a",
+      "title": "Electronic Signature Workflows",
+      "comparable": "Docusign",
+      "status": "conditional",
+      "score": {
+        "status": "conditional",
+        "value": 56.25,
+        "low": 56.25,
+        "high": 66.25,
+        "goal_feasibility": "uncertain"
+      },
+      "days": {
+        "low": 43.0,
+        "high": 91.0
+      },
+      "timing": {
+        "preparation": {
+          "estimate": {
+            "low": 28.0,
+            "high": 49.0
+          },
+          "days": {
+            "low": 28.0,
+            "high": 49.0
+          },
+          "claim_id": "factor-preparation",
+          "start_event": "assessment_start",
+          "end_event": "offer_ready"
+        },
+        "payment_cycle": {
+          "estimate": {
+            "low": 15.0,
+            "high": 42.0
+          },
+          "days": {
+            "low": 15.0,
+            "high": 42.0
+          },
+          "claim_id": "factor-payment-cycle",
+          "start_event": "offer_ready",
+          "end_event": "first_payment_received"
+        },
+        "total": {
+          "estimate": {
+            "low": 43.0,
+            "high": 91.0
+          },
+          "days": {
+            "low": 43.0,
+            "high": 91.0
+          },
+          "claim_id": "factor-time-to-first-payment",
+          "start_event": "assessment_start",
+          "end_event": "first_payment_received"
+        }
+      },
+      "test_budget": {
+        "low": 4000.0,
+        "high": 12000.0
+      },
+      "completed_stages": [
+        "research",
+        "applicability",
+        "critic",
+        "neutrality",
+        "verifier",
+        "reconciliation",
+        "factors",
+        "factor_validation",
+        "card_validation"
+      ]
+    },
+    {
+      "id": "64a6c084e6e84158aba11efa123bdf4c",
+      "title": "Subscription Billing Orchestration",
+      "comparable": "Zuora Billing",
+      "status": "conditional",
+      "score": {
+        "status": "conditional",
+        "value": 51.25,
+        "low": 51.25,
+        "high": 66.25,
+        "goal_feasibility": "uncertain"
+      },
+      "days": {
+        "low": 49.0,
+        "high": 105.0
+      },
+      "timing": {
+        "preparation": {
+          "estimate": {
+            "low": 35.0,
+            "high": 63.0
+          },
+          "days": {
+            "low": 35.0,
+            "high": 63.0
+          },
+          "claim_id": "factor-preparation",
+          "start_event": "assessment_start",
+          "end_event": "offer_ready"
+        },
+        "payment_cycle": {
+          "estimate": {
+            "low": 14.0,
+            "high": 42.0
+          },
+          "days": {
+            "low": 14.0,
+            "high": 42.0
+          },
+          "claim_id": "factor-payment-cycle",
+          "start_event": "offer_ready",
+          "end_event": "first_payment_received"
+        },
+        "total": {
+          "estimate": {
+            "low": 49.0,
+            "high": 105.0
+          },
+          "days": {
+            "low": 49.0,
+            "high": 105.0
+          },
+          "claim_id": "factor-time-to-first-payment",
+          "start_event": "assessment_start",
+          "end_event": "first_payment_received"
+        }
+      },
+      "test_budget": {
+        "low": 4400.0,
+        "high": 9500.0
+      },
+      "completed_stages": [
+        "research",
+        "applicability",
+        "critic",
+        "neutrality",
+        "verifier",
+        "reconciliation",
+        "factors",
+        "factor_validation",
+        "card_validation"
+      ]
+    },
+    {
+      "id": "03b5d22868b44bbb975d3cfc01d46f93",
+      "title": "Travel Comparison Referrals",
+      "comparable": "KAYAK",
+      "status": "conditional",
+      "score": {
+        "status": "conditional",
+        "value": 62.5,
+        "low": 62.5,
+        "high": 72.5,
+        "goal_feasibility": "uncertain"
+      },
+      "days": {
+        "low": 45.0,
+        "high": 110.0
+      },
+      "timing": {
+        "preparation": {
+          "estimate": {
+            "low": 25.0,
+            "high": 50.0
+          },
+          "days": {
+            "low": 25.0,
+            "high": 50.0
+          },
+          "claim_id": "factor-preparation",
+          "start_event": "assessment_start",
+          "end_event": "offer_ready"
+        },
+        "payment_cycle": {
+          "estimate": {
+            "low": 20.0,
+            "high": 60.0
+          },
+          "days": {
+            "low": 20.0,
+            "high": 60.0
+          },
+          "claim_id": "factor-payment",
+          "start_event": "offer_ready",
+          "end_event": "first_payment_received"
+        },
+        "total": {
+          "estimate": {
+            "low": 45.0,
+            "high": 110.0
+          },
+          "days": {
+            "low": 45.0,
+            "high": 110.0
+          },
+          "claim_id": "factor-time-to-first-payment",
+          "start_event": "assessment_start",
+          "end_event": "first_payment_received"
+        }
+      },
+      "test_budget": {
+        "low": 4600.0,
+        "high": 9700.0
+      },
+      "completed_stages": [
+        "research",
+        "applicability",
+        "critic",
+        "neutrality",
+        "verifier",
+        "reconciliation",
+        "factors",
+        "factor_validation",
+        "card_validation"
+      ]
+    },
+    {
+      "id": "1f30cb99b362414bac6f9433b6f0d92b",
+      "title": "Identity Access Reviews",
+      "comparable": "Veza",
+      "status": "conditional",
+      "score": {
+        "status": "conditional",
+        "value": 46.25,
+        "low": 46.25,
+        "high": 61.25,
+        "goal_feasibility": "uncertain"
+      },
+      "days": {
+        "low": 59.0,
+        "high": 126.0
+      },
+      "timing": {
+        "preparation": {
+          "estimate": {
+            "low": 35.0,
+            "high": 63.0
+          },
+          "days": {
+            "low": 35.0,
+            "high": 63.0
+          },
+          "claim_id": "factor-preparation",
+          "start_event": "assessment_start",
+          "end_event": "offer_ready"
+        },
+        "payment_cycle": {
+          "estimate": {
+            "low": 24.0,
+            "high": 63.0
+          },
+          "days": {
+            "low": 24.0,
+            "high": 63.0
+          },
+          "claim_id": "factor-payment",
+          "start_event": "offer_ready",
+          "end_event": "first_payment_received"
+        },
+        "total": {
+          "estimate": {
+            "low": 59.0,
+            "high": 126.0
+          },
+          "days": {
+            "low": 59.0,
+            "high": 126.0
+          },
+          "claim_id": "factor-time-to-first-payment",
+          "start_event": "assessment_start",
+          "end_event": "first_payment_received"
+        }
+      },
+      "test_budget": {
+        "low": 4500.0,
+        "high": 11000.0
+      },
+      "completed_stages": [
+        "research",
+        "applicability",
+        "critic",
+        "neutrality",
+        "verifier",
+        "reconciliation",
+        "factors",
+        "factor_validation",
+        "card_validation"
+      ]
+    },
+    {
+      "id": "ae9f63b524c74ecf9a0c661637d6328b",
+      "title": "Application Observability",
+      "comparable": "Grafana Cloud",
+      "status": "conditional",
+      "score": {
+        "status": "conditional",
+        "value": 50.0,
+        "low": 50.0,
+        "high": 60.0,
+        "goal_feasibility": "uncertain"
+      },
+      "days": {
+        "low": 44.0,
+        "high": 105.0
+      },
+      "timing": {
+        "preparation": {
+          "estimate": {
+            "low": 28.0,
+            "high": 56.0
+          },
+          "days": {
+            "low": 28.0,
+            "high": 56.0
+          },
+          "claim_id": "factor-preparation",
+          "start_event": "assessment_start",
+          "end_event": "offer_ready"
+        },
+        "payment_cycle": {
+          "estimate": {
+            "low": 16.0,
+            "high": 49.0
+          },
+          "days": {
+            "low": 16.0,
+            "high": 49.0
+          },
+          "claim_id": "factor-payment-cycle",
+          "start_event": "offer_ready",
+          "end_event": "first_payment_received"
+        },
+        "total": {
+          "estimate": {
+            "low": 44.0,
+            "high": 105.0
+          },
+          "days": {
+            "low": 44.0,
+            "high": 105.0
+          },
+          "claim_id": "factor-time-to-first-payment",
+          "start_event": "assessment_start",
+          "end_event": "first_payment_received"
+        }
+      },
+      "test_budget": {
+        "low": 3000.0,
+        "high": 9000.0
+      },
+      "completed_stages": [
+        "research",
+        "applicability",
+        "critic",
+        "neutrality",
+        "verifier",
+        "reconciliation",
+        "factors",
+        "factor_validation",
+        "card_validation"
+      ]
+    }
+  ],
+  "factors": [
+    {
+      "label": "Доступ к покупателям",
+      "weight": 25
+    },
+    {
+      "label": "Готовность платить",
+      "weight": 25
+    },
+    {
+      "label": "Подготовка предложения",
+      "weight": 20
+    },
+    {
+      "label": "Срок до оплаты",
+      "weight": 20
+    },
+    {
+      "label": "Доступные ресурсы",
+      "weight": 10
+    }
+  ]
+}
