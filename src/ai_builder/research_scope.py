@@ -45,11 +45,12 @@ class ResearchContext(FrozenContract):
     pipeline_prompts: dict[str, str] | None = None
     parent_collection_id: str | None = None
     parent_run_id: str | None = None
+    upstream_manifest: dict | None = None
 
     @model_serializer(mode='wrap')
     def serialize_compatible(self, handler):
         value = handler(self)
-        for name in ('pipeline_prefix', 'pipeline_prompts', 'parent_collection_id', 'parent_run_id'):
+        for name in ('pipeline_prefix', 'pipeline_prompts', 'parent_collection_id', 'parent_run_id', 'upstream_manifest'):
             if getattr(self, name) is None:
                 value.pop(name, None)
         return value
@@ -65,7 +66,13 @@ class ResearchContext(FrozenContract):
             raise ValueError('A follow-up requires both parent collection and run identifiers')
         if self.parent_collection_id == '' or self.parent_run_id == '':
             raise ValueError('Parent identifiers cannot be empty')
-        if (self.plan.reassessed_from_run_id is not None and self.parent_run_id is not None
+        if self.upstream_manifest is not None:
+            if (not self.parent_run_id or set(self.upstream_manifest) != {'manifest_hash','manifest'}
+                    or digest(self.upstream_manifest['manifest']) != self.upstream_manifest['manifest_hash']
+                    or self.upstream_manifest['manifest'].get('parent_run_id') != self.parent_run_id
+                    or self.upstream_manifest['manifest'].get('parent_collection_id') != self.parent_collection_id):
+                raise ValueError('An inherited analysis requires an intact explicit parent manifest')
+        if (self.upstream_manifest is None and self.plan.reassessed_from_run_id is not None and self.parent_run_id is not None
                 and self.plan.reassessed_from_run_id != self.parent_run_id):
             raise ValueError('Reassessment source and collection parent must match')
         ModelRoles(None, self.openai_pricing, '', self.role_settings, purpose=self.purpose,
@@ -75,8 +82,12 @@ class ResearchContext(FrozenContract):
 
 def freeze_context(config: Configuration, context: ResearchContext) -> ResearchContext:
     """Select prompts once, before persistence; never change a saved context."""
-    if (config.schema_version == '1.2') != (context.plan.schema_version == '3'):
+    if (config.schema_version in {'1.2','1.3'}) != (context.plan.schema_version == '3'):
         raise ValueError('Conditional scoring requires the explicit per-analogue legal source plan')
+    if context.upstream_manifest is not None and config.schema_version != '1.3':
+        raise ValueError('Upstream inheritance requires the milestone revision contract')
+    if config.schema_version == '1.3' and context.upstream_manifest is None:
+        raise ValueError('Milestone research requires the selected revision with frozen upstream sources')
     if context.pipeline_prefix is None:
         prefix, prompts = prompt_bundle(config.schema_version)
         context = context.model_copy(update={'pipeline_prefix': prefix, 'pipeline_prompts': prompts})
@@ -152,8 +163,10 @@ async def insert_research_run(conn, config: Configuration, context: ResearchCont
         parent = await _collection_parent(conn, context.parent_run_id, context.parent_collection_id)
         if parent['study_id'] != study_id or parent['model_id'] != context.plan.seed.base_model_id:
             raise ValueError('Follow-up must preserve the parent study and base model')
-        if context.plan.seed.scope_id == parent['candidate']['plan']['seed']['scope_id']:
+        if context.upstream_manifest is None and context.plan.seed.scope_id == parent['candidate']['plan']['seed']['scope_id']:
             raise ValueError('Follow-up requires a new assessment scope')
+        if context.upstream_manifest is not None and context.plan.model_dump(mode='json') != parent['candidate']['plan']:
+            raise ValueError('Factor revision must preserve the exact frozen source plan')
     run_id = uid()
     await conn.execute('''INSERT INTO app.runs(id,study_id,config_json,config_hash,limit_micro,status,
         graph_version,state_schema_version,coordinator_thread_id)
@@ -231,7 +244,7 @@ def _gap_state(config, prepared):
         'card': dict(assessment_scope_id=prepared.scope.scope_id, eligibility='needs_review', score=None,
                      publication='draft', publication_blockers=['source_documents_unavailable']),
     }
-    if config.schema_version == '1.2':
+    if config.schema_version in {'1.2','1.3'}:
         result['criteria'] = [{**item, 'state': 'pending', 'result': None,
                                'reason': 'Analytical evaluation has not run: no policy-validated source document was available.'}
                               for item in result['criteria']]
@@ -317,7 +330,13 @@ async def run_research(pool, artifacts: ArtifactStore, *, openai_key: str = '', 
 
         async def process():
             async with asyncio.timeout(remaining):
-                if replay:
+                inheritance = None
+                if context.upstream_manifest is not None:
+                    from .upstream_revision import load_upstream_manifest
+                    async with ledger.locked(run_id, fenced=True) as (conn, _, __):
+                        prepared, inheritance = await load_upstream_manifest(conn,
+                            envelope=context.upstream_manifest, config=config, context=context, artifacts=artifacts)
+                elif replay:
                     # A read-only replay must never enter prepare_scope's paid
                     # branch even if the database is incomplete/corrupted.
                     async with ledger.locked(run_id, fenced=True) as (conn, _, __):
@@ -326,7 +345,8 @@ async def run_research(pool, artifacts: ArtifactStore, *, openai_key: str = '', 
                             (run_id, context.plan.seed.scope_id))).fetchone()
                     if not row or row['state'] != 'frozen':
                         raise Conflict('Completed run is missing its frozen source packet')
-                prepared = await prepare_scope(ledger, context.plan, search_factory, fetch, artifacts, parser=parser)
+                if context.upstream_manifest is None:
+                    prepared = await prepare_scope(ledger, context.plan, search_factory, fetch, artifacts, parser=parser)
                 await _save_scope(ledger, prepared, context)
                 if not prepared.scope.documents:
                     state = _gap_state(config, prepared)
@@ -339,7 +359,7 @@ async def run_research(pool, artifacts: ArtifactStore, *, openai_key: str = '', 
                     if saved != state:
                         raise Conflict('Source-gap result is missing or changed')
                 else:
-                    graph, graph_config = await build_scope_graph(ledger, config, prepared.scope, roles)
+                    graph, graph_config = await build_scope_graph(ledger, config, prepared.scope, roles, inheritance=inheritance)
                     checkpoint = await graph.aget_state(graph_config)
                     if replay:
                         if checkpoint.next or not checkpoint.values.get('card'):
@@ -347,7 +367,7 @@ async def run_research(pool, artifacts: ArtifactStore, *, openai_key: str = '', 
                         state = dict(checkpoint.values)
                     else:
                         state = await execute_scope(ledger, config, prepared.scope, roles,
-                                                    resume=bool(checkpoint.created_at))
+                                                    resume=bool(checkpoint.created_at), inheritance=inheritance)
                 async with ledger.locked(run_id, fenced=True) as (conn, _, __):
                     snapshots = await (await conn.execute(
                         'SELECT id,metadata FROM app.source_snapshots WHERE id=ANY(%s::text[])',

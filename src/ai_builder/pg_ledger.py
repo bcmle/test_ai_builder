@@ -8,6 +8,7 @@ import json
 from contextlib import asynccontextmanager
 
 from psycopg.types.json import Jsonb
+from psycopg.pq import TransactionStatus
 
 from .store import BudgetExceeded, Conflict, micro, uid
 from .pg_execution import assert_lease
@@ -76,6 +77,169 @@ class PostgresLedger:
                 VALUES (%s,%s,'start',1,'start',%s)''', (uid(),identifier,Jsonb({})))
         return identifier
 
+    @staticmethod
+    async def _known_model_runs(conn, study_id, model_id):
+        """Do not silently omit an orphaned or newly introduced model run."""
+        rows = await (await conn.execute('''SELECT i.run_id FROM app.collection_items i
+            JOIN app.collections c ON c.id=i.collection_id
+            WHERE c.study_id=%s AND i.model_id=%s AND i.run_id IS NOT NULL
+            UNION SELECT r.id FROM app.runs r JOIN app.research_contexts x ON x.run_id=r.id
+            WHERE r.study_id=%s AND x.context->'plan'->'seed'->>'base_model_id'=%s''',
+            (study_id,model_id,study_id,model_id))).fetchall()
+        return {row['run_id'] for row in rows}
+
+    @staticmethod
+    async def _model_run_proof(conn, study_id, model_id, run_id):
+        row = await (await conn.execute('''SELECT r.study_id,r.limit_micro,i.collection_id,i.candidate,
+            c.context,c.context_hash,c.membership_hash,x.context AS research_context,x.context_hash AS research_hash
+            FROM app.runs r JOIN app.collection_items i ON i.run_id=r.id
+            JOIN app.collections c ON c.id=i.collection_id
+            LEFT JOIN app.research_contexts x ON x.run_id=r.id
+            WHERE r.id=%s AND i.model_id=%s AND c.study_id=%s''', (run_id,model_id,study_id))).fetchone()
+        if not row or row['study_id'] != study_id or not row['research_context']:
+            raise Conflict('Model budget ancestry requires an unambiguous saved collection run')
+        if (digest(row['context']) != row['context_hash']
+                or digest(row['research_context']) != row['research_hash']):
+            raise Conflict('Model budget ancestry context hash mismatch')
+        members = await (await conn.execute('''SELECT model_id,position,candidate FROM app.collection_items
+            WHERE collection_id=%s ORDER BY position''', (row['collection_id'],))).fetchall()
+        if not row['membership_hash'] or digest(members) != row['membership_hash']:
+            raise Conflict('Model budget ancestry membership hash mismatch')
+        research = row['research_context']
+        if (row['candidate'].get('plan',{}).get('seed',{}).get('base_model_id') != model_id
+                or research.get('plan',{}).get('seed',{}).get('base_model_id') != model_id):
+            raise Conflict('Model budget ancestry model identity mismatch')
+        parent_collection = row['context'].get('reassessment_of_collection_id')
+        parent_run = row['candidate'].get('parent_run_id')
+        if (research.get('parent_run_id') != parent_run
+                or research.get('parent_collection_id') != parent_collection
+                or (parent_run is None) != (parent_collection is None)):
+            raise Conflict('Model budget ancestry has inconsistent direct parent links')
+        if parent_run is not None:
+            parent = await (await conn.execute('''SELECT i.run_id,c.study_id FROM app.collection_items i
+                JOIN app.collections c ON c.id=i.collection_id WHERE i.collection_id=%s AND i.model_id=%s''',
+                (parent_collection,model_id))).fetchone()
+            if not parent or parent['study_id'] != study_id or parent['run_id'] != parent_run:
+                raise Conflict('Model budget ancestor does not match the declared parent collection')
+        return {'run_id':run_id,'parent_run_id':parent_run,'run_limit_micro':row['limit_micro']}
+
+    @staticmethod
+    async def register_model_budget_family(conn, *, study_id, model_id, ancestor_run_ids, limit='25'):
+        """Freeze verified historical membership in the caller's transaction.
+
+        The caller must use a transaction; this helper locks study before any
+        accounting work and performs no commit, lease acquisition or external I/O.
+        """
+        if conn.info.transaction_status != TransactionStatus.INTRANS:
+            raise Conflict('Model budget registration requires an explicit transaction')
+        cap = micro(limit)
+        if not model_id or not 0 < cap <= micro('25'):
+            raise ValueError('Model revision family limit must be positive and at most $25')
+        ancestors = list(ancestor_run_ids)
+        if not ancestors or len(ancestors) != len(set(ancestors)):
+            raise Conflict('Model budget ancestry must list each historical run exactly once')
+        study = await (await conn.execute('SELECT id FROM app.studies WHERE id=%s FOR UPDATE', (study_id,))).fetchone()
+        if not study:
+            raise KeyError(study_id)
+        if set(ancestors) != await PostgresLedger._known_model_runs(conn,study_id,model_id):
+            raise Conflict('Model budget ancestry must include all known model runs')
+        proofs = {identifier:await PostgresLedger._model_run_proof(conn,study_id,model_id,identifier)
+                  for identifier in ancestors}
+        roots = [p for p in proofs.values() if p['parent_run_id'] is None]
+        if len(roots) != 1:
+            raise Conflict('Model budget ancestry must have exactly one original run')
+        for identifier in proofs:
+            seen, current = set(), identifier
+            while current is not None:
+                if current not in proofs or current in seen:
+                    raise Conflict('Model budget ancestry is missing a parent or contains a cycle')
+                seen.add(current)
+                current = proofs[current]['parent_run_id']
+        effective = min(cap, *(p['run_limit_micro'] for p in proofs.values()))
+        existing = await (await conn.execute('''SELECT * FROM app.model_budget_families
+            WHERE study_id=%s AND model_id=%s''', (study_id,model_id))).fetchone()
+        if existing:
+            members = await (await conn.execute('''SELECT * FROM app.model_budget_members
+                WHERE study_id=%s AND model_id=%s''', (study_id,model_id))).fetchall()
+            if {m['run_id'] for m in members} != set(ancestors):
+                raise Conflict('New model revisions must bind to their existing immutable family')
+            old_cap = min(existing['limit_micro'], *(m['run_limit_micro'] for m in members))
+            if cap < old_cap:
+                raise Conflict('A lower requested family cap requires a matching lower run limit')
+            return {'study_id':study_id,'model_id':model_id,'limit_micro':min(effective,old_cap)}
+        ordered = sorted(ancestors)
+        await conn.execute('''INSERT INTO app.model_budget_families
+            (study_id,model_id,limit_micro,ancestor_run_ids,ancestry_hash) VALUES (%s,%s,%s,%s,%s)''',
+            (study_id,model_id,effective,Jsonb(ordered),digest(ordered)))
+        for proof in proofs.values():
+            await conn.execute('''INSERT INTO app.model_budget_members
+                (run_id,study_id,model_id,parent_run_id,run_limit_micro) VALUES (%s,%s,%s,%s,%s)''',
+                (proof['run_id'],study_id,model_id,proof['parent_run_id'],proof['run_limit_micro']))
+        await PostgresLedger.event(conn,roots[0]['run_id'],'model_budget_family_registered',
+            {'model_id':model_id,'ancestor_run_ids':ordered,'limit_micro':effective,'ancestry_hash':digest(ordered)})
+        return {'study_id':study_id,'model_id':model_id,'limit_micro':effective}
+
+    @staticmethod
+    async def bind_model_budget_run(conn, *, study_id, model_id, run_id, parent_run_id):
+        """Attach a new selected child atomically with collection run assignment."""
+        if conn.info.transaction_status != TransactionStatus.INTRANS:
+            raise Conflict('Model budget binding requires an explicit transaction')
+        await conn.execute('SELECT id FROM app.studies WHERE id=%s FOR UPDATE', (study_id,))
+        family = await (await conn.execute('''SELECT * FROM app.model_budget_families
+            WHERE study_id=%s AND model_id=%s''', (study_id,model_id))).fetchone()
+        if not family:
+            raise Conflict('Model budget family must be registered before creating a revision run')
+        proof = await PostgresLedger._model_run_proof(conn,study_id,model_id,run_id)
+        if not parent_run_id or proof['parent_run_id'] != parent_run_id:
+            raise Conflict('New model budget member must preserve its explicit parent run')
+        members = await (await conn.execute('''SELECT * FROM app.model_budget_members
+            WHERE study_id=%s AND model_id=%s''', (study_id,model_id))).fetchall()
+        by_id = {m['run_id']:m for m in members}
+        if parent_run_id not in by_id:
+            raise Conflict('Model budget parent is not in the same immutable family')
+        if await PostgresLedger._known_model_runs(conn,study_id,model_id) != set(by_id) | {run_id}:
+            raise Conflict('Model budget ancestry contains an unbound or omitted run')
+        if run_id in by_id:
+            if by_id[run_id]['parent_run_id'] != parent_run_id:
+                raise Conflict('Model budget run membership is immutable')
+            return
+        await conn.execute('''INSERT INTO app.model_budget_members
+            (run_id,study_id,model_id,parent_run_id,run_limit_micro) VALUES (%s,%s,%s,%s,%s)''',
+            (run_id,study_id,model_id,parent_run_id,proof['run_limit_micro']))
+        await PostgresLedger.event(conn,run_id,'model_budget_run_bound',
+            {'model_id':model_id,'parent_run_id':parent_run_id,'family_limit_micro':family['limit_micro']})
+
+    @staticmethod
+    async def _model_budget(conn, run, used=None, *, required=True):
+        member = await (await conn.execute('''SELECT f.* FROM app.model_budget_members m
+            JOIN app.model_budget_families f USING(study_id,model_id) WHERE m.run_id=%s''', (run['id'],))).fetchone()
+        if not member:
+            if required and run['config_json'].get('schema_version') == '1.3':
+                raise Conflict('Model revision has no verified cumulative budget family')
+            if required:
+                known = await (await conn.execute('''SELECT 1 FROM app.collection_items i
+                    JOIN app.model_budget_families f ON f.model_id=i.model_id AND f.study_id=%s
+                    WHERE i.run_id=%s''', (run['study_id'],run['id']))).fetchone()
+                if known:
+                    raise Conflict('Historical model run is missing from its cumulative budget family')
+            return None
+        rows = await (await conn.execute('''SELECT m.*,r.limit_micro FROM app.model_budget_members m
+            JOIN app.runs r ON r.id=m.run_id WHERE m.study_id=%s AND m.model_id=%s''',
+            (member['study_id'],member['model_id']))).fetchall()
+        ids = {row['run_id'] for row in rows}
+        if member['study_id'] != run['study_id'] or ids != await PostgresLedger._known_model_runs(conn,run['study_id'],member['model_id']):
+            raise Conflict('Cumulative model budget ancestry is incomplete')
+        limit = min(member['limit_micro'], *(min(r['run_limit_micro'],r['limit_micro']) for r in rows))
+        if used is None:
+            totals = await (await conn.execute('''SELECT COALESCE(sum(CASE WHEN state='settled' THEN calculated_micro
+                WHEN state IN ('reserved','unknown') THEN upper_micro ELSE 0 END),0) AS used
+                FROM app.usage WHERE run_id=ANY(%s)''', (list(ids),))).fetchone()
+            total = totals['used']
+        else:
+            total = sum(used.get(identifier,0) for identifier in ids)
+        return {'model_id':member['model_id'],'limit_micro':limit,'accounted_micro':int(total),
+                'remaining_micro':int(limit-total),'run_ids':sorted(ids)}
+
     async def register_pricing(self, body):
         identifier = digest(body)
         async with self.pool.connection() as conn:
@@ -103,6 +267,7 @@ class PostgresLedger:
             if old:
                 if any(old[k] != v for k,v in expected.items()):
                     raise Conflict('Request identity reused with different input')
+                await self._model_budget(conn,run)
                 return False
             if run['status'] not in {'selecting','queued','running'}:
                 raise Conflict('Run not accepting requests')
@@ -110,6 +275,7 @@ class PostgresLedger:
                 WHEN state IN ('reserved','unknown') THEN upper_micro ELSE 0 END) AS used
                 FROM app.usage u JOIN app.runs r ON r.id=u.run_id WHERE r.study_id=%s GROUP BY u.run_id''', (study['id'],))
             used = {r['run_id']:r['used'] for r in await cur.fetchall()}
+            family = await self._model_budget(conn,run,used)
             count = await (await conn.execute('SELECT count(*) AS n FROM app.usage WHERE run_id=%s AND provider=%s AND endpoint=%s',
                                               (run_id,provider,endpoint))).fetchone()
             request_count = count['n']
@@ -119,6 +285,7 @@ class PostgresLedger:
                     (run_id,))).fetchone()
                 request_count += fetched['n']
             blocked = (sum(used.values())+amount > study['limit_micro'] or used.get(run_id,0)+amount > run['limit_micro']
+                       or (family is not None and family['accounted_micro']+amount > family['limit_micro'])
                        or request_count >= run['config_json']['limits'][policy[provider,endpoint]]
                        or await self.active_ms(conn, run) >= run['config_json']['limits']['active_seconds']*1000)
             if blocked:
@@ -130,7 +297,7 @@ class PostgresLedger:
                     (request_id,logical_request_id,run_id,provider,model,endpoint,agent,purpose,pricing_id,amount))
                 await self.event(conn,run_id,'budget_reserved',{'request_id':request_id,'upper_micro':amount})
         if blocked:
-            raise BudgetExceeded('Run/study budget or request cap exhausted')
+            raise BudgetExceeded('Run/study/model-family budget or request cap exhausted')
         return True
 
     @asynccontextmanager
@@ -187,12 +354,13 @@ class PostgresLedger:
         self._scope(run_id)
         async with self.pool.connection() as conn, conn.transaction():
             await conn.execute('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY')
-            run = await (await conn.execute('SELECT limit_micro FROM app.runs WHERE id=%s',(run_id,))).fetchone()
+            run = await (await conn.execute('SELECT * FROM app.runs WHERE id=%s',(run_id,))).fetchone()
             if not run:
                 raise KeyError(run_id)
             rows = await (await conn.execute('SELECT * FROM app.usage WHERE run_id=%s ORDER BY created_at,request_id',(run_id,))).fetchall()
             fetches = await (await conn.execute(
                 'SELECT count(*) AS n FROM app.source_fetch_attempts WHERE run_id=%s', (run_id,))).fetchone()
+            family = await self._model_budget(conn,run,required=False)
         totals = dict(calculated_micro=0,reserved_micro=0,unknown_micro=0,billed_micro=0,billed_unknown_count=0)
         for row in rows:
             if row['state']=='settled':
@@ -204,13 +372,17 @@ class PostgresLedger:
             elif row['state']!='released':
                 totals['billed_unknown_count'] += 1
         used = sum(totals[k] for k in ['calculated_micro','reserved_micro','unknown_micro'])
-        return dict(run_id=run_id,limit_micro=run['limit_micro'],remaining_micro=run['limit_micro']-used,
+        result = dict(run_id=run_id,limit_micro=run['limit_micro'],remaining_micro=run['limit_micro']-used,
                     requests=rows, controlled_document_attempts=fetches['n'],
                     document_fetches_used=fetches['n']+sum(r['provider']=='tavily' and r['endpoint']=='extract' for r in rows),
                     **totals)
+        if family is not None:
+            result['model_budget_family'] = family
+        return result
 
     async def begin_operation(self, key, input_hash):
-        async with self.locked(self.run_id, fenced=True) as (conn,_,run):
+        budget_blocked = False
+        async with self.locked(self.run_id, fenced=True) as (conn,study,run):
             row = await (await conn.execute('SELECT * FROM app.provider_operations WHERE run_id=%s AND operation_key=%s', (self.run_id,key))).fetchone()
             if row:
                 if row['input_hash'] != input_hash:
@@ -223,8 +395,22 @@ class PostgresLedger:
             else:
                 if run['status'] not in {'selecting','queued','running'}:
                     raise Conflict('Run paused')
-                await conn.execute("INSERT INTO app.provider_operations VALUES (%s,%s,%s,'running',NULL)",(self.run_id,key,input_hash))
-                return None
+                # Also fence unmetered input-count operations before their HTTP
+                # request; a new revision may never start with unknown ancestry.
+                family = await self._model_budget(conn,run)
+                if family is not None:
+                    cost = await (await conn.execute('''SELECT COALESCE(sum(CASE WHEN u.state='settled' THEN u.calculated_micro
+                        WHEN u.state IN ('reserved','unknown') THEN u.upper_micro ELSE 0 END),0) AS used
+                        FROM app.usage u JOIN app.runs r ON r.id=u.run_id WHERE r.study_id=%s''', (study['id'],))).fetchone()
+                    budget_blocked = family['remaining_micro'] <= 0 or cost['used'] >= study['limit_micro']
+                if budget_blocked:
+                    await conn.execute("UPDATE app.runs SET status='paused',control_version=control_version+1 WHERE id=%s", (self.run_id,))
+                    await self.event(conn,self.run_id,'budget_paused',{'operation_key':key,'stage':'before_external_operation'})
+                else:
+                    await conn.execute("INSERT INTO app.provider_operations VALUES (%s,%s,%s,'running',NULL)",(self.run_id,key,input_hash))
+                    return None
+        if budget_blocked:
+            raise BudgetExceeded('Study/model-family budget exhausted before external operation')
         raise Conflict('Unfinished external operation: explicit review required before retry')
 
     async def finish_operation(self, key, response):

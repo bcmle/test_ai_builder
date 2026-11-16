@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import math
 import os
 from pathlib import Path
 import re
@@ -109,11 +111,13 @@ class ClaimPassport(PublicContract):
     source_refs: list[SourceRef] = Field(default_factory=list)
     verification_text_source: Literal['factor_handoff'] | None = None
     author_text: str | None = None
+    start_event: str | None = None
+    end_event: str | None = None
 
     @model_serializer(mode='wrap')
     def preserve_legacy_passport(self, handler):
         value = handler(self)
-        for field in ('verification_text_source', 'author_text'):
+        for field in ('verification_text_source', 'author_text', 'start_event', 'end_event'):
             if getattr(self, field) is None:
                 value.pop(field, None)
         return value
@@ -152,6 +156,55 @@ class Factor(PublicContract):
     name: str
     value: Bounds | None = None
     claim_ids: list[str] = Field(default_factory=list)
+    author_rationale: str | None = None
+
+    @model_serializer(mode='wrap')
+    def preserve_legacy_factor(self, handler):
+        value = handler(self)
+        if self.author_rationale is None:
+            value.pop('author_rationale', None)
+        return value
+
+
+class Milestone(PublicContract):
+    estimate: Bounds | None = None
+    days: Bounds | None = None
+    claim_id: str | None = None
+    start_event: Literal['assessment_start', 'offer_ready']
+    end_event: Literal['offer_ready', 'first_payment_received']
+
+    @model_validator(mode='after')
+    def conservative_days(self):
+        if (self.estimate is None) != (self.days is None):
+            raise ValueError('A milestone needs both its source estimate and rounded days')
+        if self.estimate:
+            if self.estimate.low < 0 or not self.claim_id:
+                raise ValueError('A milestone estimate needs a nonnegative interval and claim passport')
+            if (self.days.low, self.days.high) != (math.ceil(self.estimate.low), math.ceil(self.estimate.high)):
+                raise ValueError('Milestone days must conservatively round its estimate upward')
+        return self
+
+
+class Timing(PublicContract):
+    preparation: Milestone
+    payment_cycle: Milestone
+    total: Milestone
+
+    @model_validator(mode='after')
+    def sequential_events(self):
+        for milestone, start, end in ((self.preparation, 'assessment_start', 'offer_ready'),
+                (self.payment_cycle, 'offer_ready', 'first_payment_received'),
+                (self.total, 'assessment_start', 'first_payment_received')):
+            if (milestone.start_event, milestone.end_event) != (start, end):
+                raise ValueError('Preparation and payment must have distinct sequential boundaries')
+        if self.preparation.days and self.payment_cycle.days:
+            expected = (self.preparation.days.low + self.payment_cycle.days.low,
+                        self.preparation.days.high + self.payment_cycle.days.high)
+            if not self.total.days or (self.total.days.low, self.total.days.high) != expected:
+                raise ValueError('Total time must sum the two rounded sequential stages')
+        elif self.total.days:
+            raise ValueError('Total time stays unknown when either stage is unknown')
+        return self
 
 
 class Score(PublicContract):
@@ -270,10 +323,12 @@ class Model(PublicContract):
     description_basis: Literal['proposed_launch'] = 'proposed_launch'
     status: Literal['queued', 'running', 'pass', 'fail', 'needs_review', 'technical_failed', 'incomplete',
                     'confirmed', 'conditional', 'blocked', 'unresolved']
-    scoring_policy_version: Literal['1.5.2'] | None = None
+    scoring_policy_version: Literal['1.5.2', '1.5.3'] | None = None
     eligibility_conditions: list[EligibilityCondition] = Field(default_factory=list)
     legal_reviews: list[LegalReview] = Field(default_factory=list)
     completed_stages: list[str] = Field(default_factory=list)
+    inherited_stages: list[str] = Field(default_factory=list)
+    timing: Timing | None = None
     queue_position: int | None = Field(default=None, ge=1, le=20)
     eligible_for_ranking: bool = False
     rank: int | None = None
@@ -292,6 +347,9 @@ class Model(PublicContract):
     @model_serializer(mode='wrap')
     def policy_fields(self, handler):
         value = handler(self)
+        if self.scoring_policy_version != '1.5.3':
+            value.pop('timing', None)
+            value.pop('inherited_stages', None)
         if self.scoring_policy_version is None:
             for key in ('scoring_policy_version', 'eligibility_conditions', 'legal_reviews', 'completed_stages', 'queue_position'):
                 value.pop(key, None)
@@ -299,6 +357,15 @@ class Model(PublicContract):
 
     @model_validator(mode='after')
     def rank_gate(self):
+        if self.scoring_policy_version != '1.5.3' and (self.timing or self.inherited_stages):
+            raise ValueError('Separate milestones and inherited stages require policy 1.5.3')
+        if self.timing:
+            claim_ids = {claim.id for claim in self.claims}
+            if any(part.claim_id and part.claim_id not in claim_ids
+                   for part in (self.timing.preparation, self.timing.payment_cycle, self.timing.total)):
+                raise ValueError('Every milestone passport must be present in this assessment')
+            if self.days != self.timing.total.days:
+                raise ValueError('Compatibility days must equal the computed total')
         if self.status in {'confirmed', 'conditional', 'blocked', 'unresolved'} and not self.scoring_policy_version:
             raise ValueError('Versioned eligibility requires its scoring policy')
         if not self.scoring_policy_version:
@@ -324,6 +391,8 @@ class Model(PublicContract):
                 raise ValueError('Conditional criteria require explicit launch conditions')
             if not self.legal_reviews or any(r.execution_state != 'completed' for r in self.legal_reviews):
                 raise ValueError('Ranking requires a completed legal document review for each analogue')
+            if self.scoring_policy_version == '1.5.3' and (not self.timing or not self.timing.total.days):
+                raise ValueError('Ranking requires both sequential timing estimates')
         if self.rank is not None and not self.eligible_for_ranking:
             raise ValueError('Unfinished assessment cannot have a rank')
         if self.scoring_policy_version and self.status in {'queued', 'running', 'technical_failed', 'blocked', 'unresolved'} and self.score:
@@ -336,6 +405,18 @@ class Scenario(PublicContract):
     business_budget_usd: str | float | int
     days: int
     jurisdiction: str | None = None
+
+
+def model_digest(value):
+    """Same canonical JSON digest used by frozen collection manifests."""
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+class RetainedAssessment(PublicContract):
+    run_id: str = Field(pattern=IDENTIFIER)
+    revision_id: str = Field(pattern=IDENTIFIER)
+    scoring_policy_version: Literal['1.5.2', '1.5.3'] | None = None
+    model_hash: str = Field(pattern=r'^[a-f0-9]{64}$')
 
 
 class PublicSnapshot(PublicContract):
@@ -357,13 +438,20 @@ class PublicSnapshot(PublicContract):
     parent_run_id: str | None = Field(default=None, pattern=IDENTIFIER)
     parent_model_id: str | None = Field(default=None, pattern=IDENTIFIER)
     launch_conditions: list[str] = Field(default_factory=list, max_length=30)
-    scoring_policy_version: Literal['1.5.2'] | None = None
+    scoring_policy_version: Literal['1.5.2', '1.5.3'] | None = None
     reassessment_of_collection_id: str | None = Field(default=None, pattern=IDENTIFIER)
     processing_order: list[str] = Field(default_factory=list, max_length=20)
+    selected_model_ids: list[str] = Field(default_factory=list, max_length=5)
+    catalog_count: int | None = Field(default=None, ge=1, le=20)
+    retained_assessments: dict[str, RetainedAssessment] = Field(default_factory=dict)
+    update_states: dict[str, Literal['queued', 'running', 'completed', 'technical_failed', 'incomplete']] = Field(default_factory=dict)
 
     @model_serializer(mode='wrap')
     def policy_fields(self, handler):
         value = handler(self)
+        if self.scoring_policy_version != '1.5.3':
+            for key in ('selected_model_ids', 'catalog_count', 'retained_assessments', 'update_states'):
+                value.pop(key, None)
         if self.scoring_policy_version is None:
             for key in ('scoring_policy_version', 'reassessment_of_collection_id', 'processing_order'):
                 value.pop(key, None)
@@ -381,6 +469,37 @@ class PublicSnapshot(PublicContract):
                 raise ValueError('A focused analysis cannot be its own parent')
         if len({m.id for m in self.models}) != len(self.models):
             raise ValueError('Duplicate public model identity')
+        if self.scoring_policy_version == '1.5.3':
+            identifiers = {m.id for m in self.models}
+            selected = set(self.selected_model_ids)
+            retained = set(self.retained_assessments)
+            if (len(self.models) != 20 or self.catalog_count != 20 or len(self.selected_model_ids) != 5
+                    or len(selected) != 5 or not selected <= identifiers or self.expected_count != 5
+                    or self.processing_order != self.selected_model_ids or set(self.update_states) != selected):
+                raise ValueError('Factor revision needs twenty catalog models and exactly five frozen selected updates')
+            if not self.reassessment_of_collection_id or self.reassessment_of_collection_id == self.run_id:
+                raise ValueError('Factor revision requires its preceding collection')
+            if not identifiers - selected <= retained or not retained <= identifiers:
+                raise ValueError('Every unselected model must retain its exact historical assessment')
+            for model in self.models:
+                ref = self.retained_assessments.get(model.id)
+                if ref:
+                    if (ref.run_id == self.run_id or ref.scoring_policy_version != model.scoring_policy_version
+                            or ref.model_hash != model_digest(model.model_dump(mode='json'))):
+                        raise ValueError('Retained assessment payload or provenance changed')
+                    if self.update_states.get(model.id) == 'completed':
+                        raise ValueError('A completed new update cannot retain an older assessment as its result')
+                elif (model.id not in selected or model.scoring_policy_version != '1.5.3'
+                      or self.update_states[model.id] != 'completed' or model.status not in TERMINAL):
+                    raise ValueError('Only completed selected updates may replace retained assessments')
+            self.selected_count = 5
+            self.completed_count = sum(state in {'completed', 'technical_failed', 'incomplete'}
+                                       for state in self.update_states.values())
+            if self.status == 'completed' and any(state != 'completed' for state in self.update_states.values()):
+                raise ValueError('Completed revision still has unfinished selected updates')
+            return self
+        if self.selected_model_ids or self.catalog_count is not None or self.retained_assessments or self.update_states:
+            raise ValueError('Selective update metadata requires policy 1.5.3')
         if any(m.scoring_policy_version != self.scoring_policy_version for m in self.models):
             raise ValueError('A collection cannot mix scoring policies')
         if self.reassessment_of_collection_id and (not self.scoring_policy_version or self.reassessment_of_collection_id == self.run_id):
@@ -504,7 +623,8 @@ def public_model(result, metadata: dict, config) -> dict:
             verification=verification.get(identifier),
             checked_at=card.get('validated_at') if identifier in verification else None, source_refs=refs,
             verification_text_source='factor_handoff' if verified_input else None,
-            author_text=claim['neutral_text'] if verified_input and text != claim['neutral_text'] else None)
+            author_text=claim['neutral_text'] if verified_input and text != claim['neutral_text'] else None,
+            start_event=claim.get('start_event'), end_event=claim.get('end_event'))
     status = card.get('eligibility') or metadata.get('status', 'queued')
     if status not in STATUS_LABELS:
         status = 'incomplete'
@@ -546,7 +666,9 @@ def public_model(result, metadata: dict, config) -> dict:
         buyer=metadata.get('buyer'), revenue=metadata.get('revenue'), comparable=metadata.get('comparable'),
         status=status, eligible_for_ranking=eligible, rank=None, score=score, criteria=criteria,
         factors=[dict(id=factor['factor_id'], name=FACTORS.get(factor['factor_id'], factor['factor_id']),
-                      value=factor.get('value'), claim_ids=factor.get('claim_ids') or []) for factor in factors.get('factors', [])],
+                      value=factor.get('value'), claim_ids=factor.get('claim_ids') or [],
+                      author_rationale=factor.get('rationale') if policy == '1.5.3' else None)
+                 for factor in factors.get('factors', [])],
         days=factors.get('days'), test_budget=factors.get('cost'), test_plan_claim_ids=factors.get('test_plan_claim_ids') or [],
         risks=[dict(id=risk['risk_id'],
                     text=risk.get('description') or risk.get('text') or ' '.join(claims[c]['text'] for c in risk.get('premise_claim_ids', []) if c in claims),
@@ -564,6 +686,12 @@ def public_model(result, metadata: dict, config) -> dict:
                 for condition in card.get('eligibility_conditions', [])],
             legal_reviews=_legal_reviews(card.get('legal_reviews', []), known_sources, source_metadata),
             completed_stages=[stage for stage in card.get('completed_stages', []) if stage in STAGES])
+    if policy == '1.5.3':
+        value.update(timing=card.get('timing'), inherited_stages=[stage for stage in card.get('inherited_stages', []) if stage in STAGES])
+        if value['timing']:
+            value['days'] = value['timing']['total']['days']
+        for factor in value['factors']:
+            factor['name'] = {'S03': 'Preparation to a ready offer', 'S04': 'Ready offer to first payment'}.get(factor['id'], factor['name'])
     return Model.model_validate(value).model_dump(mode='json')
 
 
@@ -587,10 +715,19 @@ def publish_snapshot(data_dir, snapshot: dict, *, set_latest: bool = True) -> Pa
     public = PublicSnapshot.model_validate(snapshot)
     if public.parent_collection_id and set_latest:
         raise ValueError('A focused analysis cannot replace the main collection')
-    for model in public.models:
+    if public.retained_assessments:
+        ancestors = {ancestor['run_id'] for ancestor in snapshot_ancestors(data_dir, public.model_dump(mode='json'))}
+        for identifier, ref in public.retained_assessments.items():
+            original = load_snapshot(data_dir, ref.run_id, revision_id=ref.revision_id)
+            prior = next((m for m in original['models'] if m['id'] == identifier), None) if original else None
+            if (ref.run_id not in ancestors or prior is None or model_digest(prior) != ref.model_hash
+                    or original['scenario'] != public.scenario.model_dump(mode='json') or original['market'] != public.market):
+                raise ValueError('Retained assessment must match an exact verified ancestor revision')
+    current_models = [model for model in public.models if model.id not in public.retained_assessments]
+    for model in current_models:
         model.rank = None
     for category, goal in ((category, goal) for category in ('final', 'conditional') for goal in GOALS):
-        ranked = sorted((m for m in public.models if m.eligible_for_ranking and m.score.status == category
+        ranked = sorted((m for m in current_models if m.eligible_for_ranking and m.score.status == category
                          and m.score.goal_feasibility == goal),
                         key=lambda m: (m.score.value, m.title.casefold(), m.id))
         previous, place = None, 0
@@ -616,7 +753,7 @@ def publish_snapshot(data_dir, snapshot: dict, *, set_latest: bool = True) -> Pa
     return path
 
 
-def load_snapshot(data_dir, run_id=None) -> dict | None:
+def load_snapshot(data_dir, run_id=None, *, revision_id=None) -> dict | None:
     directory = Path(data_dir) / 'public'
     try:
         if run_id is None:
@@ -624,14 +761,46 @@ def load_snapshot(data_dir, run_id=None) -> dict | None:
         if not isinstance(run_id, str) or not re.fullmatch(IDENTIFIER, run_id) or run_id in {'latest', 'featured'}:
             return None
         path = directory / f'{run_id}.json'
+        if revision_id is not None:
+            if not isinstance(revision_id, str) or not re.fullmatch(IDENTIFIER, revision_id):
+                return None
+            if path.is_file() and not path.is_symlink() and path.stat().st_size <= 10_000_000:
+                current_revision = json.loads(path.read_text()).get('revision_id')
+            else:
+                current_revision = None
+            if current_revision != revision_id:
+                path = directory / 'history' / run_id / f'{revision_id}.json'
         if path.is_symlink() or path.stat().st_size > 10_000_000:
             return None
         snapshot = PublicSnapshot.model_validate_json(path.read_text())
-        if snapshot.run_id != run_id:
+        if snapshot.run_id != run_id or (revision_id is not None and snapshot.revision_id != revision_id):
             return None
         return snapshot.model_dump(mode='json')
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def snapshot_ancestors(data_dir, snapshot):
+    """Walk only saved, scenario-compatible lineage with unchanged base identities."""
+    result, visited = [], {snapshot['run_id']}
+    current = snapshot
+    for _ in range(32):
+        identifier = current.get('reassessment_of_collection_id')
+        if not identifier or identifier in visited:
+            break
+        parent = load_snapshot(data_dir, identifier)
+        if (not parent or parent.get('parent_collection_id') or parent['scenario'] != snapshot['scenario']
+                or parent['market'] != snapshot['market']):
+            break
+        current_models = {m['id']: m['base_model_id'] for m in current['models']}
+        parent_models = {m['id']: m['base_model_id'] for m in parent['models']}
+        shared = current_models.keys() & parent_models.keys()
+        if not shared or any(current_models[identifier] != parent_models[identifier] for identifier in shared):
+            break
+        result.append(parent)
+        visited.add(identifier)
+        current = parent
+    return result
 
 
 def _valid_followup(data_dir, run_id) -> dict | None:

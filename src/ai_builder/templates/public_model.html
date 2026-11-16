@@ -1,10 +1,27 @@
-{% extends 'public_base.html' %}{% from 'public_parts.html' import status, interval, score_label with context %}
+{% extends 'public_base.html' %}{% from 'public_parts.html' import status, update_status, interval, score_label with context %}
 {% block title %}{{ model.title }} · Business models{% endblock %}
 {% block content %}
-{% include 'public_followup_link.html' %}
-<section class="page-intro" data-progress-run="{{ snapshot.run_id }}" data-progress-revision="{{ snapshot.revision_id }}" data-progress-active="{{ 'true' if snapshot.status == 'running' or (snapshot.status == 'partial' and snapshot.completed_count < snapshot.selected_count) else 'false' }}"><a class="breadcrumb" href="/runs/{{ snapshot.run_id }}">← Back to {{ snapshot.title }}</a><div class="model-title-row"><div><span class="eyebrow">{{ model.category }} · {{ snapshot.market }}</span><h1>{{ model.title }}</h1><p class="lead">{{ model.summary }}</p></div><aside class="verdict-box">{{ status(model) }}{% if model.score %}<strong>{{ model.score.low|number }}–{{ model.score.high|number }}<small>/100</small></strong><span>{{ score_label(model) }}</span><p>{{ goal_labels[model.score.goal_feasibility] }}</p>{% else %}<strong class="verdict-text">{% if model.status in ['queued','running'] %}Research<br> in progress{% else %}Evidence<br> before a score{% endif %}</strong><p>No score is available for this assessment.{% if model.queue_position and model.status in ['queued','running'] %} Update {{ model.queue_position }} of {{ snapshot.selected_count }}.{% endif %}</p>{% endif %}</aside></div><div class="overview-grid"><article><span class="eyebrow">Proposed buyer</span><h3>{{ model.buyer or 'Not yet specified' }}</h3></article><article><span class="eyebrow">Revenue hypothesis</span><h3>{{ model.revenue or 'Not yet specified' }}</h3></article><article><span class="eyebrow">Comparable to investigate</span><h3>{{ model.comparable or 'Not yet specified' }}</h3></article></div><p class="small muted">These describe a proposed launch. Discovery leads are hypotheses; the evidence and analytical judgments below determine what is supported.</p><nav class="section-nav" aria-label="Model sections"><a href="#criteria">Criteria</a>{% if previous_model %}<a href="#previous-assessment">Previous assessment</a>{% endif %}{% if model.eligibility_conditions %}<a href="#conditions">Launch conditions</a>{% endif %}{% if model.legal_reviews %}<a href="#legal-reviews">Legal documents</a>{% endif %}{% if model.risks %}<a href="#risks">Risks</a>{% endif %}{% if model.factors or model.days or model.test_budget %}<a href="#factors">Launch outlook</a>{% endif %}{% if model.test_plan_claim_ids %}<a href="#test-plan">Test plan</a>{% endif %}{% if model.claims %}<a href="#claims">Claim passports</a>{% endif %}<a href="#sources">Sources</a></nav></section>
-{% include 'public_focused_scope.html' %}
+<section class="page-intro ceo-intro" data-progress-run="{{ snapshot.run_id }}" data-progress-revision="{{ snapshot.revision_id }}" data-progress-active="{{ 'true' if snapshot.status == 'running' or (snapshot.status == 'partial' and snapshot.completed_count < snapshot.selected_count) else 'false' }}">
+<a class="breadcrumb" href="/runs/{{ snapshot.run_id }}">← Back to {{ snapshot.title }}</a>
+{% include 'public_ceo_summary.html' %}
+<nav class="section-nav ceo-nav" aria-label="Model sections"><a href="#full-analysis">Full analysis and sources</a><a href="#criteria">Criteria</a><a href="#sources">Sources</a>{% if previous_model or retained_assessment %}<a href="#{{ 'previous-assessment' if previous_model else 'retained-assessment' }}">Previous assessment</a>{% endif %}{% if followup %}<a href="/runs/{{ followup.run_id }}/models/{{ followup.models[0].id }}">Read the focused analysis ↗</a>{% endif %}</nav>
+</section>
 {% if reassessment %}<p class="notice">This is an earlier assessment. <a href="/models/{{ model.id }}?run={{ reassessment.run_id }}">Follow the current reassessment →</a></p>{% endif %}
+<details class="full-analysis" id="full-analysis">
+<summary><span>Full analysis and sources</span><span class="expand-icon" aria-hidden="true">+</span></summary>
+<div class="full-analysis-body">
+<section id="model-description" class="full-description"><span class="eyebrow">Proposed launch · full description</span><p>{{ model.summary }}</p><dl><div><dt>Buyer</dt><dd>{{ model.buyer or 'Not yet specified' }}</dd></div><div><dt>Revenue hypothesis</dt><dd>{{ model.revenue or 'Not yet specified' }}</dd></div><div><dt>Comparable</dt><dd>{{ model.comparable or 'Not yet specified' }}</dd></div></dl><p class="small muted">These describe a proposed launch. Discovery leads are hypotheses; the evidence and analytical judgments below determine what is supported.</p></section>
+{% include 'public_followup_link.html' %}
+{% include 'public_focused_scope.html' %}
+
+{% if retained_assessment %}
+<section class="previous-assessment-heading notice" id="retained-assessment" aria-labelledby="retained-assessment-title">
+<h2 id="retained-assessment-title">{% if not_selected %}Not selected for this update{% else %}Previous assessment — {{ {'queued':'update queued', 'running':'update in progress', 'technical_failed':'update interrupted', 'incomplete':'update incomplete'}.get(update_state, 'retained') }}{% endif %}</h2>
+<p>{% if not_selected %}This model is outside the five selected updates. Its existing findings and sources are preserved.{% else %}These previous findings remain available until this selected update publishes its result.{% endif %} This retained assessment is excluded from the new ranking and comparison.</p>
+<p class="small muted">Original policy: {{ model.scoring_policy_version or 'legacy all-pass policy' }} · Previous outcome: {{ status_labels[model.status] }}.</p>
+<a class="understated-link small" href="/models/{{ model.id }}?run={{ retained_assessment.run_id }}">Open the original assessment ↗</a>
+</section>
+{% endif %}
 {% include 'public_conditional_sections.html' %}
 {% if model.limitations %}<section class="limitations"><span class="eyebrow">Keep in view</span><ul>{% for limitation in model.limitations %}<li>{{ limitation }}</li>{% endfor %}</ul></section>{% endif %}
 {% if previous_model %}
@@ -25,5 +42,6 @@
 {% else %}
   {% include 'public_assessment_body.html' %}
 {% endif %}
+</div></details>
 <div class="end-link"><a class="button" href="/runs/{{ snapshot.run_id }}">Back to the collection ↗</a></div>
 {% endblock %}

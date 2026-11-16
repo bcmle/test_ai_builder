@@ -2,7 +2,8 @@
 <section class="assessment-checks" aria-labelledby="checks-title">
   <span class="eyebrow">Scoring policy {{ model.scoring_policy_version }}</span>
   <h3 id="checks-title">What has been completed.</h3>
-  {% if model.completed_stages %}<ul class="completed-stages">{% for stage in model.completed_stages %}<li>{{ stage_labels[stage] }}</li>{% endfor %}</ul>{% else %}<p class="small muted">No completed analysis stages have been published for this revision yet.</p>{% endif %}
+  {% if model.inherited_stages %}<p class="small muted">Inherited completed stages from the verified earlier assessment:</p><ul class="completed-stages inherited-stages">{% for stage in model.inherited_stages %}<li>{{ stage_labels[stage] }}</li>{% endfor %}</ul><p class="small muted">Newly completed stages in this revision:</p>{% endif %}
+  {% if model.completed_stages %}<ul class="completed-stages">{% for stage in model.completed_stages if stage not in (model.inherited_stages or []) %}<li>{{ stage_labels[stage] }}</li>{% endfor %}</ul>{% else %}<p class="small muted">No completed analysis stages have been published for this revision yet.</p>{% endif %}
   {% if model.status == 'technical_failed' %}<p>Research was interrupted by a technical problem. This is not a finding about the business.</p>{% elif model.status == 'unresolved' %}<p>Evidence or the proposed scenario remains unresolved. No ranking is available.</p>{% elif model.status == 'blocked' %}<p>The assessed scenario conflicts with a required business constraint. No ranking is available.</p>{% endif %}
 </section>
 {% endif %}

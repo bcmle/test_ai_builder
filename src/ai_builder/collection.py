@@ -90,11 +90,12 @@ class CollectionContext(FrozenContract):
     role_settings: dict
     study_budget_usd: Decimal = Field(gt=0, le=100)
     purpose: Literal['live', 'eval', 'development'] = 'live'
-    execution_version: Literal['collection-1', 'collection-2'] = 'collection-1'
+    execution_version: Literal['collection-1', 'collection-2', 'collection-3'] = 'collection-1'
     pipeline_prefix: str = PREFIX
     pipeline_prompts: dict = Field(default_factory=lambda: dict(PROMPTS))
     reassessment_of_collection_id: str | None = None
     processing_order: tuple[str, ...] = ()
+    selected_model_ids: tuple[str, ...] = ()
 
     @model_serializer(mode='wrap')
     def preserve_legacy_context(self, handler):
@@ -103,11 +104,20 @@ class CollectionContext(FrozenContract):
             value.pop('reassessment_of_collection_id', None)
         if not self.processing_order:
             value.pop('processing_order', None)
+        if not self.selected_model_ids:
+            value.pop('selected_model_ids', None)
         return value
 
     @model_validator(mode='after')
     def compatible(self):
-        if self.execution_version == 'collection-2':
+        if self.execution_version == 'collection-3':
+            if (self.config.schema_version != '1.3' or not self.reassessment_of_collection_id
+                    or len(self.selected_model_ids) != 5 or len(set(self.selected_model_ids)) != 5
+                    or self.processing_order != self.selected_model_ids):
+                raise ValueError('Factor revision requires exactly five frozen selected identities in priority order')
+        elif self.selected_model_ids:
+            raise ValueError('Selected update manifest requires collection-3')
+        elif self.execution_version == 'collection-2':
             if (self.config.schema_version != '1.2' or not self.reassessment_of_collection_id
                     or len(self.processing_order) != 20 or len(set(self.processing_order)) != 20):
                 raise ValueError('Reassessment needs new policy, parent and twenty frozen model identities')
@@ -118,7 +128,8 @@ class CollectionContext(FrozenContract):
         if (self.openai_pricing.provider != 'openai' or self.tavily_pricing.provider != 'tavily'
                 or self.openai_pricing.model != self.config.model):
             raise ValueError('Collection tariffs must match the configured providers/model')
-        ModelRoles(None, self.openai_pricing, '', self.role_settings, purpose=self.purpose)
+        ModelRoles(None, self.openai_pricing, '', self.role_settings, purpose=self.purpose,
+                   prompt_prefix=self.pipeline_prefix, prompts=self.pipeline_prompts)
         return self
 
 
@@ -334,12 +345,15 @@ async def _freeze(ledger, identifier, context, models, leads, uncertainties):
 
 
 async def _ensure_child(ledger, identifier, item, context):
+    if context.execution_version == 'collection-3' and item['model_id'] not in context.selected_model_ids:
+        raise Conflict('Model is not selected for this update')
     research = ResearchContext(plan=SourceResearchPlan.model_validate(item['candidate']['plan']),
                                openai_pricing=context.openai_pricing, tavily_pricing=context.tavily_pricing,
                                role_settings=context.role_settings, purpose=context.purpose,
                                pipeline_prefix=context.pipeline_prefix, pipeline_prompts=context.pipeline_prompts,
                                parent_collection_id=context.reassessment_of_collection_id,
-                               parent_run_id=item['candidate'].get('parent_run_id'))
+                               parent_run_id=item['candidate'].get('parent_run_id'),
+                               upstream_manifest=item['candidate'].get('upstream_manifest'))
     async with ledger.locked(ledger.run_id, fenced=True) as (conn, study, __):
         collection = await (await conn.execute('SELECT selected_count,membership_hash FROM app.collections WHERE id=%s', (identifier,))).fetchone()
         if collection['selected_count'] != 20 or not collection['membership_hash']:
@@ -351,6 +365,9 @@ async def _ensure_child(ledger, identifier, item, context):
             run_id = await insert_research_run(conn, context.config, research, study['id'])
             await conn.execute('UPDATE app.collection_items SET run_id=%s WHERE collection_id=%s AND model_id=%s',
                                (run_id, identifier, item['model_id']))
+            if context.execution_version == 'collection-3':
+                await PostgresLedger.bind_model_budget_run(conn, study_id=study['id'], model_id=item['model_id'],
+                    run_id=run_id, parent_run_id=item['candidate']['parent_run_id'])
         await conn.execute("UPDATE app.collection_items SET state='running',updated_at=clock_timestamp() WHERE collection_id=%s AND model_id=%s",
                            (identifier, item['model_id']))
         await ledger.event(conn, ledger.run_id, 'collection_child_started', {'model_id': item['model_id'], 'child_run_id': run_id})
@@ -408,6 +425,9 @@ async def _resume_child(ledger, identifier, child_id, *, reason='Owner invoked -
 
 async def _save_model(ledger, identifier, item, public, state, error=None):
     async with ledger.locked(ledger.run_id, fenced=True) as (conn, _, __):
+        if state == 'technical_failed' and item['candidate'].get('retained_assessment'):
+            # A failed attempt cannot erase an already published assessment.
+            public = item['public_model']
         await conn.execute('''UPDATE app.collection_items SET state=%s,public_model=%s,error_code=%s,updated_at=clock_timestamp()
             WHERE collection_id=%s AND model_id=%s''', (state, Jsonb(public), error, identifier, item['model_id']))
         await ledger.event(conn, ledger.run_id, 'collection_child_result',
@@ -455,9 +475,18 @@ async def _publish(ledger, identifier, context, data_dir, public_model, publish_
                              'days': context.config.scenario.days,
                              'jurisdiction': context.config.scenario.jurisdiction}, 'models': models}
     if context.reassessment_of_collection_id:
-        snapshot.update(scoring_policy_version='1.5.2',
+        snapshot.update(scoring_policy_version=context.config.scoring_policy_version,
                         reassessment_of_collection_id=context.reassessment_of_collection_id,
                         processing_order=list(context.processing_order))
+    if context.execution_version == 'collection-3':
+        selected = [i for i in items if i['model_id'] in context.selected_model_ids]
+        snapshot.update(catalog_count=len(items), expected_count=5, selected_count=5,
+            selected_model_ids=list(context.selected_model_ids),
+            completed_count=sum(i['state'] in {'completed', 'technical_failed', 'incomplete'} for i in selected),
+            update_states={i['model_id']:i['state'] for i in selected},
+            retained_assessments={i['model_id']:i['candidate']['retained_assessment'] for i in items
+                if i['candidate'].get('retained_assessment') and
+                (i['model_id'] not in context.selected_model_ids or i['state'] != 'completed')})
     # Publication is a small local atomic file write, never an external call.
     # Fence it so a superseded coordinator cannot replace a newer snapshot.
     async with ledger.locked(ledger.run_id, fenced=True):
@@ -503,8 +532,11 @@ async def run_collection(pool, artifacts: ArtifactStore, *, context: CollectionC
         nonlocal context, clock_started
         row, items = await _read_collection(ledger, identifier)
         context = CollectionContext.model_validate(row['context'])
+        selected_ids = set(context.selected_model_ids) if context.execution_version == 'collection-3' else {i['model_id'] for i in items}
         if set(retry_model_ids) - {item['model_id'] for item in items}:
             raise ValueError('Recovery selection contains a model outside this frozen collection')
+        if set(retry_model_ids) - selected_ids:
+            raise ValueError('Recovery cannot expand the frozen five-card update')
         if not row['membership_hash']:
             if not openai_key or not tavily_key:
                 raise ValueError('Provider keys are required for unfinished discovery')
@@ -527,9 +559,10 @@ async def run_collection(pool, artifacts: ArtifactStore, *, context: CollectionC
         await _publish(ledger, identifier, context, data_dir, model_projector, snapshot_publisher, 'Collection selected')
         if row['selected_count'] != 20:
             return
-        pending = [item for item in items if item['state'] in {'queued', 'running'} or
+        selected_ids = set(context.selected_model_ids) if context.execution_version == 'collection-3' else {i['model_id'] for i in items}
+        pending = [item for item in items if item['model_id'] in selected_ids and (item['state'] in {'queued', 'running'} or
                    (retry_failed and item['state'] == 'technical_failed' and
-                    (not retry_model_ids or item['model_id'] in retry_model_ids))]
+                    (not retry_model_ids or item['model_id'] in retry_model_ids)))]
         recovered = [item for item in pending if item['state'] == 'technical_failed']
         if recovered:
             async with ledger.locked(ledger.run_id, fenced=True) as (conn, _, __):
@@ -539,18 +572,19 @@ async def run_collection(pool, artifacts: ArtifactStore, *, context: CollectionC
                                 'previous_error': item['error_code']} for item in recovered],
                     'policy': 'bounded-role-repair-1', 'frozen_inputs_unchanged': True})
         if not pending:
-            complete = all(item['state'] == 'completed' for item in items)
+            complete = all(item['state'] == 'completed' for item in items if item['model_id'] in selected_ids)
             await _set_state(ledger, identifier, 'completed' if complete else 'partial',
                              None if complete else row['stop_reason'] or 'one_or_more_models_technically_incomplete')
             return
         if not openai_key or not tavily_key:
             raise ValueError('Provider keys are required for unfinished models')
         await _set_state(ledger, identifier, 'running')
+        target_count = len(selected_ids)
         for item in pending:
             child_id = await _ensure_child(ledger, identifier, item, context)
-            print(f'Model {item["position"]}/20: {item["candidate"]["metadata"]["title"]}; run={child_id}', flush=True)
+            print(f'Model {item["position"]}/{target_count}: {item["candidate"]["metadata"]["title"]}; run={child_id}', flush=True)
             await _publish(ledger, identifier, context, data_dir, model_projector, snapshot_publisher,
-                           f'Researching model {item["position"]} of 20')
+                           f'Researching model {item["position"]} of {target_count}')
             try:
                 if resume_collection:
                     await _resume_child(ledger, identifier, child_id)
@@ -573,9 +607,9 @@ async def run_collection(pool, artifacts: ArtifactStore, *, context: CollectionC
                                    'Stopped at the shared budget or provider access limit')
                     return
             await _publish(ledger, identifier, context, data_dir, model_projector, snapshot_publisher,
-                           f'Model {item["position"]} of 20 processed')
+                           f'Model {item["position"]} of {target_count} processed')
         _, items = await _read_collection(ledger, identifier)
-        complete = all(item['state'] == 'completed' for item in items)
+        complete = all(item['state'] == 'completed' for item in items if item['model_id'] in selected_ids)
         await _set_state(ledger, identifier, 'completed' if complete else 'partial',
                          None if complete else 'one_or_more_models_technically_incomplete')
 
@@ -612,12 +646,12 @@ async def run_collection(pool, artifacts: ArtifactStore, *, context: CollectionC
     # Lease has been released; summary reads require no lease or mutations.
     async with pool.connection() as conn:
         saved = await (await conn.execute('SELECT * FROM app.collections WHERE id=%s', (identifier,))).fetchone()
-        count = await (await conn.execute("SELECT count(*) AS n FROM app.collection_items WHERE collection_id=%s AND state='completed'", (identifier,))).fetchone()
+        count = await (await conn.execute("SELECT count(*) AS n FROM app.collection_items WHERE collection_id=%s AND state='completed' AND (%s::text[] IS NULL OR model_id=ANY(%s::text[]))", (identifier, list(context.selected_model_ids) or None, list(context.selected_model_ids) or None))).fetchone()
         amounts = await (await conn.execute('''SELECT sum(CASE WHEN u.state='settled' THEN u.calculated_micro
             WHEN u.state IN ('reserved','unknown') THEN u.upper_micro ELSE 0 END) AS used
             FROM app.usage u JOIN app.runs r ON r.id=u.run_id WHERE r.study_id=%s''', (saved['study_id'],))).fetchone()
     usage = {'limit_micro': micro(context.study_budget_usd), 'accounted_micro': amounts['used'] or 0}
-    return CollectionResult(identifier, saved['study_id'], saved['state'], saved['selected_count'], count['n'],
+    return CollectionResult(identifier, saved['study_id'], saved['state'], len(context.selected_model_ids) or saved['selected_count'], count['n'],
                             data_dir / 'public' / f'{identifier}.json', usage)
 
 

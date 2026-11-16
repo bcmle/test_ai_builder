@@ -59,11 +59,24 @@ class FactorConfig(Contract):
     id: str
     weight: Decimal = Field(ge=0)
     anchors: list[str] = Field(min_length=5, max_length=5)
+    name: str | None = None
+    definition: str | None = None
+    unit: str | None = None
+    start_event: str | None = None
+    end_event: str | None = None
+
+    @model_serializer(mode='wrap')
+    def legacy_compatible(self, handler):
+        value = handler(self)
+        for field in ('name','definition','unit','start_event','end_event'):
+            if getattr(self,field) is None:
+                value.pop(field,None)
+        return value
 
 
 class Configuration(Contract):
-    schema_version: Literal["1.0", "1.1", "1.2"]
-    scoring_policy_version: Literal['1.5.2'] | None = None
+    schema_version: Literal["1.0", "1.1", "1.2", "1.3"]
+    scoring_policy_version: Literal['1.5.2','1.5.3'] | None = None
     language: Literal["en"]
     model: str = Field(min_length=1)
     market: str
@@ -82,20 +95,38 @@ class Configuration(Contract):
 
     @model_validator(mode="after")
     def invariants(self):
-        if (self.schema_version == '1.2') != (self.scoring_policy_version == '1.5.2'):
-            raise ValueError('Schema 1.2 requires scoring policy 1.5.2; legacy policies cannot be changed')
+        if self.scoring_policy_version != {'1.2':'1.5.2','1.3':'1.5.3'}.get(self.schema_version):
+            raise ValueError('Schema 1.3 requires scoring policy 1.5.3' if self.schema_version=='1.3' else
+                             'Schema 1.2 requires scoring policy 1.5.2; legacy policies cannot be changed')
         if self.market in {"RU", "BY", "AM", "AZ", "KZ", "KG", "MD", "TJ", "TM", "UZ"}:
             raise ValueError("Excluded market")
         if len(self.criteria) != 10 or {c.id for c in self.criteria} != {f"F{i:02}" for i in range(1, 11)}:
             raise ValueError("All ten mandatory filters must be configured exactly once")
         allowed_design = {'F02', 'F05', 'F06', 'F07', 'F08', 'F09'}
-        if any(c.allow_design_basis and (self.schema_version not in {'1.1', '1.2'} or c.id not in allowed_design)
+        if any(c.allow_design_basis and (self.schema_version not in {'1.1', '1.2', '1.3'} or c.id not in allowed_design)
                for c in self.criteria):
             raise ValueError('Design basis is limited to the v1.1 operational criteria')
         if len(self.factors) != 5 or {f.id for f in self.factors} != {f"S{i:02}" for i in range(1, 6)}:
             raise ValueError("All five scoring factors required")
         if sum(f.weight for f in self.factors) != 100:
             raise ValueError("Weights must sum to 100")
+        for factor in self.factors:
+            fields = (factor.name,factor.definition,factor.unit)
+            if self.schema_version == '1.3':
+                if any(not value or not value.strip() for value in fields):
+                    raise ValueError('Milestone schema requires factor names, definitions and units')
+                expected = {'S03':('assessment_start','offer_ready'),
+                            'S04':('offer_ready','first_payment_received')}.get(factor.id,(None,None))
+                if (factor.start_event,factor.end_event) != expected:
+                    raise ValueError('Factor milestones must preserve the sequential preparation/payment boundary')
+                if factor.id in {'S03','S04'} and factor.unit != 'days':
+                    raise ValueError('Timing factor estimates are measured in days')
+                if factor.weight != {'S01':25,'S02':25,'S03':20,'S04':20,'S05':10}[factor.id]:
+                    raise ValueError('Milestone revision preserves the approved factor weights')
+                if factor.id in {'S03','S04'} and factor.anchors != ['>90 дней','61–90 дней','31–60 дней','15–30 дней','≤14 дней']:
+                    raise ValueError('Milestone revision preserves the approved day anchors')
+            elif any(value is not None for value in (*fields,factor.start_event,factor.end_event)):
+                raise ValueError('Factor definitions require a new milestone schema, never mutated legacy inputs')
         return self
 
     def snapshot(self) -> str:
