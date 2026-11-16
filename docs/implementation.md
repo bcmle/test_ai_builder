@@ -510,8 +510,8 @@ Only the required neutrality recheck and verifier are then newly billed.
 The proposed correction was tested against production's saved responses in a
 temporary container with a read-only source overlay and a read-only database
 transaction, without provider credentials or calls. Docusign's last candidate
-passed with all 48 source units covered. Zuora's first two saved candidates each
-had one remaining presentation mismatch: the explicitly proposed demand test's
+passed with all 48 source units covered. The first reported presentation
+mismatch in Zuora's first two saved candidates was the proposed demand test's
 standalone `Success:` heading became `Proposed success criteria:`. Its later
 candidate instead removed `success` and must remain rejected. The unchanged
 threshold requires two actual pilot payments, accepted invoice outputs without
@@ -524,3 +524,13 @@ skip. Independent review and PostgreSQL replay tests confirm that the earlier
 paid success-clarification response is reused without a new repair charge, while
 the saved later response that removed `success` still rejects. Frozen packets,
 source generation, operation keys and existing diagnostics remain unchanged.
+
+The final production overlay accepted all three saved Docusign candidates
+(input events 1435, 1441 and 1447). Zuora still rejects as a whole: fuller
+read-only diagnostics found additional changes beyond the first label mismatch,
+including removed content outside the frozen omittable spans and changes to
+modality in the byproduct assumption and F03 required check. The isolated replay
+test above proves cache reuse for an otherwise valid clarification; it does not
+establish acceptance of Zuora's actual complete replies. No broader equivalence
+rule or source-unit rewrite was introduced to force acceptance. The same queue
+can reuse those replies, retain Zuora's technical stop, and continue other cards.
