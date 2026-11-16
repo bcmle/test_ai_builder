@@ -8,7 +8,7 @@ const out = path.resolve(process.argv[2] || path.join(root, '.build'));
 await fs.mkdir(out, { recursive: true });
 const data = JSON.parse(await fs.readFile(path.join(root, 'data.json'), 'utf8'));
 const p = Presentation.create({ slideSize: { width: 1280, height: 720 } });
-const C = { ink:'#161B19', paper:'#F8F9F6', muted:'#59635E', green:'#207A60', amber:'#E8BF64', line:'#DCE2DA', white:'#FFFFFF' };
+const C = { ink:'#122C26', paper:'#F4F3EC', muted:'#5D7068', green:'#397B63', amber:'#E5CA80', line:'#CCD4C8', white:'#F7F8EF', lime:'#D2EC7A', dark:'#0C211C', lightMuted:'#B5CBBE' };
 const font = 'Arial';
 const site = 'https://ai-builder-lab.com/';
 const compare = `${site}compare?models=23c49394cadf4e0ab3b7f78d9d70373a,03b5d22868b44bbb975d3cfc01d46f93&run=${data.run_id}&revision=${data.revision_id}`;
@@ -28,108 +28,131 @@ function text(s,t,x,y,w,h,size=26,color=C.ink,bold=false,link=null){
  q.text=t;q.text.style={fontFamily:font,fontSize:size,color,bold,insets:0,verticalAlignment:'top',wrap:true};
  if(link)q.hyperlink={uri:link,isExternal:true};return q;
 }
-function slide(i,dark=false){
- const s=p.slides.add();s.background.fill=dark?C.ink:C.paper;
- if(i>0)text(s,titles[i],60,44,1150,68,43,dark?C.white:C.ink,true);
- text(s,`${String(i+1).padStart(2,'0')} / 07`,1155,674,85,25,16,dark?'#C8D6CF':C.muted);
+function slide(i,bg=C.paper){
+ const s=p.slides.add();s.background.fill=bg;
  const sources=[data.source_url,'https://github.com/bcmle/test_ai_builder',site+'methodology'];
  s.speakerNotes.text=`${timings[i]}\n\n${notes[i]}\n\nИсточники: ${sources.join('\n')}\nСрез: ${data.published_at}; revision ${data.revision_id}.`;
  return s;
 }
-async function image(s,name,x,y,w,h){const b=await fs.readFile(path.join(root,'assets',name));s.images.add({blob:b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength),contentType:'image/png',alt:name==='home.png'?'Главный экран опубликованного сайта':'Реальная страница сравнения Docusign и KAYAK',fit:'contain',position:{left:x,top:y,width:w,height:h}});}
+function folio(s,i,dark=false,label='AI BUILDER'){
+ text(s,label,64,673,1050,25,15,dark?C.lightMuted:C.muted,false,label.startsWith('ai-builder-lab.com')?(i===4?compare:site):null);
+ text(s,String(i+1).padStart(2,'0'),1174,670,50,29,19,dark?C.lime:C.ink,true);
+}
+function kicker(s,t,dark=false){text(s,t,64,40,1120,30,18,dark?C.lime:C.green,true);}
+async function image(s,name,x,y,w,h,fit='contain'){
+ const b=await fs.readFile(path.join(root,'assets',name));
+ s.images.add({blob:b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength),contentType:'image/png',alt:name==='optical-filter.png'?'Концептуальный образ оптического фильтра':name==='home.png'?'Опубликованный сайт AI Builder':'Опубликованная страница сравнения карточек',fit,position:{left:x,top:y,width:w,height:h}});
+}
 function table(s,vals,x,y,width,height,widths){
  const t=s.tables.add({rows:vals.length,columns:vals[0].length,left:x,top:y,width,height,columnWidths:widths,values:vals});
- t.borders.assign({fill:C.line,width:1});
+ t.borders.assign({fill:C.paper,width:0});
  for(let r=0;r<vals.length;r++){
   t.rows[r].height=height/vals.length;
   for(let c=0;c<vals[0].length;c++){
-   const q=t.getCell(r,c);q.fill=r===0?C.ink:C.paper;
-   q.text.style={fontFamily:font,fontSize:23,color:r===0?C.white:C.ink,bold:r===0};
+   const q=t.getCell(r,c);q.fill=r===0?C.ink:r===1?'#E4EACF':C.paper;
+   q.text.style={fontFamily:font,fontSize:r===1&&c>0?35:r===0?24:26,color:r===0?C.white:C.ink,bold:r===0||r===1};
   }
  }
  return t;
 }
 
-let s=slide(0);
-text(s,'AI BUILDER',60,50,480,35,22,C.green,true);
-text(s,titles[0],60,138,610,160,57,C.ink,true);
-text(s,'Выбор идеи для платного теста\nза 90 дней',60,327,580,88,30,C.muted);
-await image(s,'home.png',680,135,540,304);
-for(const [x,n,l] of [[60,'20','моделей в каталоге'],[465,'5','условных оценок'],[870,'15','требуют проверки']]){
- text(s,n,x,486,310,95,72,C.green,true);text(s,l,x,584,345,45,24,C.muted);
+let s=slide(0,C.dark);
+await image(s,'optical-filter.png',0,0,1280,720,'cover');
+kicker(s,'AI BUILDER',true);
+text(s,'Проверка\nбизнес-моделей',64,130,880,200,76,C.white,true);
+text(s,'Сайт для выбора идеи\nи платного теста за 90 дней',68,352,660,105,31,C.lightMuted);
+for(const [x,n,l] of [[64,'20','моделей'],[310,'5','условных оценок'],[590,'15','требуют проверки']]){
+ text(s,n,x,514,210,91,75,C.lime,true);text(s,l,x+2,607,270,34,23,C.white);
 }
-text(s,'ai-builder-lab.com',60,674,550,26,18,C.muted,false,site);
+folio(s,0,true,'ai-builder-lab.com');
+s.speakerNotes.text+='\nФоновый концептуальный образ создан встроенным ImageGen. Это декоративная иллюстрация, не изображение оборудования проекта.';
 
 s=slide(1);
-text(s,'Полный путь исследования работает на сервере',60,125,1120,42,27,C.muted);
-const stages=[['01','Источники'],['02','Отбор'],['03','Критик'],['04','Проверка'],['05','Оценка'],['06','Карточка']];
-stages.forEach(([n,label],i)=>{const x=60+i*195;text(s,n,x,217,150,68,47,C.green,true);text(s,label,x,294,185,45,26,C.ink,true);});
-text(s,'Сайт',60,413,320,45,30,C.ink,true);
-text(s,'ai-builder-lab.com',60,473,330,36,25,C.green,true,site);
-text(s,'HTTPS\nКарточки и сравнение',60,512,330,74,25,C.muted);
-text(s,'Сервер Aeza',460,413,330,45,30,C.ink,true);
-text(s,'Исследования и AI-агенты\nЗапуск оператором',460,473,365,100,25,C.muted);
-text(s,'PostgreSQL',860,413,350,45,30,C.ink,true);
-text(s,'Состояние и результаты\nУчёт расходов и возобновление',860,473,365,110,25,C.muted);
-text(s,'Публичный сайт показывает результаты. Платные исследования запускаются отдельно на сервере.',60,625,1125,45,20,C.muted);
+kicker(s,'РАБОТАЮЩИЙ ПРОДУКТ');
+text(s,'Сайт и сервер\nс базой данных',64,94,560,146,55,C.ink,true);
+text(s,'ai-builder-lab.com',64,263,470,42,30,C.green,true,site);
+await image(s,'home.png',528,109,688,387);
+text(s,'Aeza',64,345,350,46,30,C.ink,true);
+text(s,'AI-агенты работают\nна сервере',64,396,375,72,25,C.muted);
+text(s,'PostgreSQL',64,493,400,45,30,C.ink,true);
+text(s,'Состояние, результаты, расходы\nи продолжение после остановки',64,545,450,78,23,C.muted);
+text(s,'Источники  /  Отбор  /  Критик',555,525,635,37,24,C.ink,true);
+text(s,'Проверка  /  Оценка  /  Карточка',555,566,650,38,24,C.ink,true);
+text(s,'HTTPS. Просмотр и сравнение на сайте.\nИсследование запускает оператор на сервере.',555,615,650,51,19,C.muted);
+folio(s,1);
 
 s=slide(2);
-text(s,'20 моделей: подтверждения и открытые вопросы по каждому фактору',60,119,1160,40,25,C.muted);
-const chart=s.charts.add('bar',{
- position:{left:58,top:177,width:1162,height:427},categories:[...data.criteria].reverse().map(v=>`${v.id}  ${v.label}`),
- series:[{name:'Подтверждено',values:[...data.criteria].reverse().map(v=>v.passed),fill:C.green},{name:'Не подтверждено',values:[...data.criteria].reverse().map(v=>v.unknown),fill:C.amber}],
- barOptions:{direction:'bar',grouping:'stacked',gapWidth:54,overlap:100},hasLegend:true,
+kicker(s,'ОБЯЗАТЕЛЬНЫЕ ФАКТОРЫ');
+text(s,'Где не хватает доказательств',64,87,1160,72,52,C.ink,true);
+text(s,'20 моделей в каталоге. Явных отказов в текущем срезе: 0.',64,162,1130,43,25,C.muted);
+const criteria=[...data.criteria].reverse();
+s.charts.add('bar',{
+ position:{left:60,top:213,width:1156,height:388},categories:criteria.map(v=>`${v.id}  ${v.label}`),
+ series:[{name:'Подтверждено',values:criteria.map(v=>v.passed),fill:C.green,dataLabels:{showValue:true,position:'center',numberFormatCode:'0;-0;;',textStyle:{typeface:font,fontSize:20,bold:true,fill:C.white}}},{name:'Не подтверждено',values:criteria.map(v=>v.unknown),fill:C.amber}],
+ barOptions:{direction:'bar',grouping:'stacked',gapWidth:76,overlap:100},hasLegend:true,
  legend:{position:'bottom',textStyle:{typeface:font,fontSize:20,fill:C.ink}},
- xAxis:{visible:true,textStyle:{typeface:font,fontSize:21,fill:C.ink},line:{fill:'none',width:0}},
+ xAxis:{visible:true,textStyle:{typeface:font,fontSize:20,fill:C.ink},line:{fill:'none',width:0}},
  yAxis:{visible:false,min:0,max:20,majorGridlines:null,line:{fill:'none',width:0}},
- dataLabels:{showValue:true,position:'center',numberFormatCode:'0;-0;;',textStyle:{typeface:font,fontSize:21,bold:true,fill:C.ink}},chartFill:C.paper,plotAreaFill:C.paper
+ dataLabels:{showValue:true,position:'center',numberFormatCode:'0;-0;;',textStyle:{typeface:font,fontSize:20,bold:true,fill:C.ink}},chartFill:C.paper,plotAreaFill:C.paper
 });
-text(s,'Явных отказов: 0. Неподтверждённый фактор остаётся открытым вопросом.',60,616,1155,32,23,C.ink,true);
-text(s,'Срез 16.11.2026: текущие карточки каталога, включая предыдущие оценки. Одна модель может иметь несколько пробелов.',60,655,1090,39,16,C.muted);
+text(s,'F01 и F03 остаются открытыми у всех 20 моделей',64,618,1150,38,28,C.ink,true);
+folio(s,2,false,'16.11.2026. Включены предыдущие оценки. Одна модель может иметь несколько пробелов.');
 
-s=slide(3);
-text(s,'Пять оценённых моделей прошли оба этапа на реальных данных',60,122,1160,43,26,C.green,true);
-text(s,'Критик',60,209,480,53,36,C.ink,true);
-text(s,'Ищет причины провала\nзапуска и первой оплаты',60,283,495,98,29,C.muted);
-text(s,'Проверяющий',680,209,530,53,36,C.ink,true);
-text(s,'Проверяет нейтральные тезисы\nпо документам без оценок\nи бизнес-выводов критика',680,283,530,142,29,C.muted);
-text(s,'Пример: туристические рефералы',60,450,1100,44,27,C.green,true);
-text(s,'Партнёрское одобрение может задержать первую оплату',60,506,1140,47,31,C.ink,true);
-text(s,'Паспорт утверждения: источник, дата, метод, уверенность',60,593,1130,49,26,C.muted);
+s=slide(3,C.dark);
+kicker(s,'ПРОВЕРКА ВЫВОДОВ',true);
+text(s,'Две роли с раздельными контекстами',64,91,1152,77,51,C.white,true);
+text(s,'01',64,207,180,88,69,C.lime,true);
+text(s,'Критик',64,310,490,57,39,C.white,true);
+text(s,'Что помешает запуску\nи первой оплате?',64,386,505,96,30,C.lightMuted);
+text(s,'02',682,207,180,88,69,C.lime,true);
+text(s,'Проверяющий',682,310,534,57,39,C.white,true);
+text(s,'Нейтральные тезисы и документы.\nБез оценок и бизнес-выводов\nкритика.',682,386,540,122,27,C.lightMuted);
+text(s,'5',64,538,95,106,87,C.lime,true);
+text(s,'моделей прошли оба этапа\nна реальных данных',178,558,470,83,26,C.white);
+text(s,'Паспорт утверждения',682,551,530,40,27,C.white,true);
+text(s,'Источник, дата, метод, уверенность',682,602,535,37,23,C.lightMuted);
+folio(s,3,true);
 
 s=slide(4);
-text(s,'До трёх моделей одной версии исследования рядом',60,122,1130,44,27,C.muted);
-await image(s,'compare-results.png',60,208,440,248);
-text(s,'Реальный экран сайта',60,471,440,34,20,C.muted);
-table(s,[['Параметр','Подписание\nаналог Docusign','Рефералы\nаналог KAYAK'],['Оценка / 100','56,25–66,25','62,5–72,5'],['До оплаты','43–91 день','45–110 дней'],['Бюджет теста','$4 000–12 000','$4 600–9 700']],550,200,670,330,[206,232,232]);
-text(s,'Оценки условные. У обеих моделей открыты F01 и F03.',60,558,1140,39,25,C.green,true);
-text(s,'Сравниваем сроки, бюджет, риски и условия запуска',60,610,1130,42,29,C.ink,true);
-text(s,'Открыть сравнение на сайте',60,671,650,26,18,C.muted,false,compare);
-s.speakerNotes.text+=`\nСтраница сравнения: ${compare}\nСроки и бюджет — аналитические диапазоны, а не результаты фактических запусков. Компании показаны как аналоги.`;
+kicker(s,'ИНСТРУМЕНТ ДЛЯ СОБСТВЕННИКА');
+text(s,'Карточки, которые\nможно сравнить',64,88,780,147,55,C.ink,true);
+text(s,'До трёх моделей одной версии исследования',64,253,780,40,25,C.muted);
+await image(s,'compare-results.png',878,80,338,190);
+table(s,[['Параметр','Электронное подписание\nАналог: Docusign','Туристические рефералы\nАналог: KAYAK'],['Оценка / 100','56,25–66,25','62,5–72,5'],['До первой оплаты','43–91 день','45–110 дней'],['Бюджет теста','$4 000–12 000','$4 600–9 700']],64,326,1152,292,[330,411,411]);
+text(s,'Оценки условные. У обеих моделей открыты F01 и F03.',64,634,1140,34,23,C.green,true);
+folio(s,4,false,'ai-builder-lab.com/compare');
 
-s=slide(5);
-const weights=s.charts.add('bar',{
- position:{left:60,top:168,width:770,height:414},categories:[...data.factors].reverse().map(v=>v.label),series:[{name:'Вес',values:[...data.factors].reverse().map(v=>v.weight),fill:C.green}],
- barOptions:{direction:'bar',grouping:'clustered',gapWidth:85},hasLegend:false,
- xAxis:{visible:true,textStyle:{typeface:font,fontSize:24,fill:C.ink},line:{fill:'none',width:0}},
- yAxis:{visible:false,min:0,max:30,majorGridlines:null,line:{fill:'none',width:0}},
- dataLabels:{showValue:true,position:'outEnd',numberFormatCode:'0"%"',textStyle:{typeface:font,fontSize:25,bold:true,fill:C.green}},chartFill:C.paper,plotAreaFill:C.paper
+s.speakerNotes.text+=`\nСтраница сравнения: ${compare}\nКомпании — аналоги предлагаемых моделей. Сроки и бюджеты — аналитические оценки. В рисках туристических рефералов отмечено возможное ожидание партнёрского одобрения.\nСсылка для демонстрации: ${compare}`;
+
+s=slide(5,C.lime);
+kicker(s,'ЛОГИКА ОЦЕНКИ');
+text(s,'Оценка под конкретный запуск',64,88,1150,75,52,C.ink,true);
+text(s,'90',58,213,365,174,152,C.ink,true);
+text(s,'дней до первой оплаты',65,395,390,85,31,C.ink,true);
+text(s,'2 человека\n$15 000 без зарплат\nРынок США',65,502,390,118,26,C.ink);
+const factors=[...data.factors].reverse();
+s.charts.add('bar',{
+ position:{left:470,top:217,width:745,height:369},categories:factors.map(v=>v.label),series:[{name:'Вес',values:factors.map(v=>v.weight),fill:C.ink}],
+ barOptions:{direction:'bar',grouping:'clustered',gapWidth:125},hasLegend:false,
+ xAxis:{visible:true,textStyle:{typeface:font,fontSize:22,fill:C.ink},line:{fill:'none',width:0}},
+ yAxis:{visible:false,min:0,max:31,majorGridlines:null,line:{fill:'none',width:0}},
+ dataLabels:{showValue:true,position:'outEnd',numberFormatCode:'0"%"',textStyle:{typeface:font,fontSize:26,bold:true,fill:C.ink}},chartFill:C.lime,plotAreaFill:C.lime
 });
-text(s,'90 дней',910,185,320,84,55,C.green,true);
-text(s,'2 человека\n$15 000 без зарплат\nРынок США',910,298,315,158,26,C.ink);
-text(s,'Единый сценарий\nдля сравнения',910,497,315,82,23,C.muted);
-text(s,'Веса находятся в конфигурации. Диапазон баллов отражает неопределённость.',60,609,1140,43,25,C.ink);
-text(s,'Оценка не является статистической вероятностью успеха.',60,659,1080,30,18,C.muted);
+text(s,'Веса в конфигурации. Диапазоны сохраняют неопределённость.',470,611,746,56,22,C.ink);
+folio(s,5,false,'Балл не является статистической вероятностью успеха.');
 
-s=slide(6,true);
-text(s,'Проверка на практике',60,194,510,52,32,'#A7DFC7',true);
-text(s,'Выбрать одну модель\nЗакрыть условия запуска\nПроверить спрос платным пилотом',60,280,550,190,29,C.white);
-text(s,'Полная версия',720,194,490,52,32,'#A7DFC7',true);
-text(s,'Кабинет владельца\nУправление исследованиями\nИстория экспериментов',720,280,500,190,29,C.white);
-text(s,'Что пересмотрел бы в задании',60,496,1120,41,27,'#A7DFC7',true);
-text(s,'Точную вероятность без статистики запусков.\nОбязательность аналога стоимостью от $300 млн.',60,551,1130,86,26,C.white);
-text(s,'ai-builder-lab.com',60,674,430,26,18,'#C8D6CF',false,site);
-text(s,'github.com/bcmle/test_ai_builder',550,674,600,26,18,'#C8D6CF',false,'https://github.com/bcmle/test_ai_builder');
+s=slide(6,C.dark);
+kicker(s,'РАЗВИТИЕ ПРОДУКТА',true);
+text(s,'Следующая проверка:\nреальный клиент',64,92,1160,145,58,C.white,true);
+text(s,'01',64,302,110,73,58,C.lime,true);
+text(s,'Платный пилот',204,305,650,56,38,C.white,true);
+text(s,'Выбрать модель и закрыть условия запуска',204,375,950,45,28,C.lightMuted);
+text(s,'02',64,449,110,73,58,C.lime,true);
+text(s,'Полная версия',204,453,650,56,38,C.white,true);
+text(s,'Кабинет владельца и история экспериментов',204,523,950,45,28,C.lightMuted);
+text(s,'Пересмотрел бы в ТЗ:',64,597,365,40,25,C.lime,true);
+text(s,'точную вероятность без статистики\nи обязательность аналога от $300 млн',447,596,765,70,24,C.white);
+folio(s,6,true,'ai-builder-lab.com      /      github.com/bcmle/test_ai_builder');
 
 await (await PresentationFile.exportPptx(p)).save(path.join(out,'candidate.pptx'));
 for(let i=0;i<p.slides.items.length;i++){
