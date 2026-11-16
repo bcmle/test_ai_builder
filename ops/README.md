@@ -1,8 +1,11 @@
 # Reassessment recovery
 
 `quiesce-reassessment.sh` is a narrowly scoped operator helper for the running
-`ai-builder-reassessment-v152` Python container. It does not alter the deployment
-bundle, database, immutable research inputs or budgets.
+`ai-builder-reassessment-v152` Python container. The explicitly named recovery
+container can be selected with
+`QUIESCE_CONTAINER=ai-builder-reassessment-v152-repair1`; all other names are
+rejected. It does not alter the deployment bundle, database, immutable research
+inputs or budgets.
 
 Run as root on the Linux Docker host with the exact collection ID, PostgreSQL
 container, database and user. The optional wait limit is at most 600 seconds.
