@@ -22,7 +22,7 @@ from psycopg_pool import PoolTimeout
 from .config import load_config
 from .pg_execution import execution_pool
 from .pg_migrate import MIGRATIONS
-from .public import CRITERIA, FACTORS, GOALS, STATUS_LABELS, load_featured_followup, load_snapshot
+from .public import CRITERIA, FACTORS, GOALS, STAGES, STATUS_LABELS, load_featured_followup, load_snapshot
 
 
 async def check_database(pool):
@@ -73,7 +73,7 @@ def create_app(data_dir=None, config_path=None, *, database_url=None, technical_
     templates = Environment(loader=FileSystemLoader(Path(__file__).with_name('templates')),
                             autoescape=select_autoescape(['html']))
     templates.globals.update(status_labels=STATUS_LABELS, goal_labels=GOALS, criterion_names=CRITERIA,
-                             factor_names=FACTORS)
+                             factor_names=FACTORS, stage_labels=STAGES)
     templates.filters['date'] = lambda value: str(value)[:10] if value else 'Not supplied'
     templates.filters['number'] = lambda value: f'{float(value):,.1f}'.removesuffix('.0') if value is not None else '—'
     templates.filters['dollars'] = lambda value: f'${float(value):,.0f}' if value is not None else 'Not available'
@@ -110,12 +110,20 @@ def create_app(data_dir=None, config_path=None, *, database_url=None, technical_
                   (not query or query.casefold() in ' '.join(str(m.get(key) or '') for key in ('title', 'buyer', 'summary')).casefold())
                   and (status not in STATUS_LABELS or m['status'] == status)
                   and (not category or m['category'] == category)]
-        ranking = {goal: sorted((m for m in snapshot['models'] if m['rank'] is not None and
+        ranking = {goal: sorted((m for m in snapshot['models'] if m['rank'] is not None and m['score']['status'] == 'final' and
                                  m['score']['goal_feasibility'] == goal), key=lambda m: (m['rank'], m['title'], m['id']))
                    for goal in GOALS}
-        counts = {status: sum(m['status'] == status for m in snapshot['models']) for status in ('pass', 'fail', 'needs_review')}
+        conditional_ranking = {goal: sorted((m for m in snapshot['models'] if m['rank'] is not None and
+                                 m['score']['status'] == 'conditional' and m['score']['goal_feasibility'] == goal),
+                                 key=lambda m: (m['rank'], m['title'], m['id'])) for goal in GOALS}
+        counts = {status: sum(m['status'] == status for m in snapshot['models'])
+                  for status in ('pass', 'fail', 'needs_review', 'confirmed', 'conditional', 'blocked', 'unresolved')}
         counts['unfinished'] = sum(m['status'] in {'queued', 'running', 'incomplete', 'technical_failed'} for m in snapshot['models'])
+        latest = load_snapshot(data)
+        reassessment = latest if latest and latest.get('reassessment_of_collection_id') == snapshot['run_id'] else None
         return page('public_run.html', snapshot=snapshot, models=models, ranking=ranking,
+                    conditional_ranking=conditional_ranking,
+                    conditional_count=sum(len(group) for group in conditional_ranking.values()), reassessment=reassessment,
                     ranked_count=sum(len(group) for group in ranking.values()), query=query, selected_status=status,
                     selected_category=category, categories=sorted({m['category'] for m in snapshot['models']}), counts=counts)
 
@@ -127,12 +135,23 @@ def create_app(data_dir=None, config_path=None, *, database_url=None, technical_
         if model is None:
             raise HTTPException(404, 'Model not found in this published collection')
         followup = load_featured_followup(data)
-        if followup and (followup['parent_collection_id'] != snapshot['run_id']
+        if followup and (followup['parent_collection_id'] not in {snapshot['run_id'], snapshot.get('reassessment_of_collection_id')}
                          or followup['parent_model_id'] != model['id']
                          or followup['models'][0]['base_model_id'] != model['base_model_id']):
             followup = None
-        return page('public_model.html', snapshot=snapshot, model=model,
-                    followup=followup,
+        latest = load_snapshot(data)
+        reassessment = latest if latest and latest.get('reassessment_of_collection_id') == snapshot['run_id'] else None
+        previous_snapshot = previous_model = None
+        if model['status'] in {'queued', 'running', 'technical_failed'} and snapshot.get('reassessment_of_collection_id'):
+            parent = load_snapshot(data, snapshot['reassessment_of_collection_id'])
+            if parent and parent['scenario'] == snapshot['scenario'] and parent['market'] == snapshot['market']:
+                prior = next((item for item in parent['models'] if item['id'] == model['id']
+                              and item['base_model_id'] == model['base_model_id']), None)
+                if prior and prior['status'] in {'pass', 'fail', 'needs_review', 'confirmed', 'conditional', 'blocked', 'unresolved'}:
+                    previous_snapshot, previous_model = parent, prior
+        return page('public_model.html', snapshot=snapshot, model=model, reassessment=reassessment,
+                    followup=followup, previous_snapshot=previous_snapshot, previous_model=previous_model,
+                    previous_sources={s['id']: s for s in previous_model['sources']} if previous_model else {},
                     sources={s['id']: s for s in model['sources']})
 
     @app.api_route('/compare', methods=['GET', 'HEAD'], response_class=HTMLResponse)
@@ -145,7 +164,7 @@ def create_app(data_dir=None, config_path=None, *, database_url=None, technical_
             return page('public_error.html', status_code=400, snapshot=snapshot,
                         message='Choose one to three models from this collection to compare.')
         revision = request.query_params.get('revision')
-        if revision and revision != snapshot['revision_id']:
+        if (revision and revision != snapshot['revision_id']) or (snapshot.get('scoring_policy_version') and not revision):
             return page('public_error.html', status_code=409, snapshot=snapshot,
                         message='This research has been updated. Select models again to compare the current revision.')
         selected = [next(m for m in snapshot['models'] if m['id'] == identifier) for identifier in identifiers]

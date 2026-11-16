@@ -2,7 +2,7 @@
 {% from 'public_parts.html' import model_card, compare_bar with context %}
 {% block main_class %}home-main{% endblock %}
 {% block content %}
-<section class="hero">
+<section class="hero"{% if snapshot %} data-progress-run="{{ snapshot.run_id }}" data-progress-revision="{{ snapshot.revision_id }}" data-progress-active="{{ 'true' if snapshot.status == 'running' or (snapshot.status == 'partial' and snapshot.completed_count < snapshot.selected_count) else 'false' }}"{% endif %}>
   <div class="hero-copy wrap">
     <h1>A clearer view of<br> what to build.</h1>
     <p>Explore business models, question the assumptions, and follow the evidence before you launch.</p>

@@ -18,7 +18,7 @@ import time
 from typing import Literal
 
 from psycopg.types.json import Jsonb
-from pydantic import Field, model_validator
+from pydantic import Field, model_serializer, model_validator
 
 from .config import Configuration, load_config
 from .evidence import ArtifactStore
@@ -90,12 +90,29 @@ class CollectionContext(FrozenContract):
     role_settings: dict
     study_budget_usd: Decimal = Field(gt=0, le=100)
     purpose: Literal['live', 'eval', 'development'] = 'live'
-    execution_version: Literal['collection-1'] = 'collection-1'
+    execution_version: Literal['collection-1', 'collection-2'] = 'collection-1'
     pipeline_prefix: str = PREFIX
     pipeline_prompts: dict = Field(default_factory=lambda: dict(PROMPTS))
+    reassessment_of_collection_id: str | None = None
+    processing_order: tuple[str, ...] = ()
+
+    @model_serializer(mode='wrap')
+    def preserve_legacy_context(self, handler):
+        value = handler(self)
+        if self.reassessment_of_collection_id is None:
+            value.pop('reassessment_of_collection_id', None)
+        if not self.processing_order:
+            value.pop('processing_order', None)
+        return value
 
     @model_validator(mode='after')
     def compatible(self):
+        if self.execution_version == 'collection-2':
+            if (self.config.schema_version != '1.2' or not self.reassessment_of_collection_id
+                    or len(self.processing_order) != 20 or len(set(self.processing_order)) != 20):
+                raise ValueError('Reassessment needs new policy, parent and twenty frozen model identities')
+        elif self.reassessment_of_collection_id is not None or self.processing_order:
+            raise ValueError('Reassessment metadata requires collection-2')
         if self.config.market != 'US' or not self.config.scenario.jurisdiction:
             raise ValueError('The prototype requires an explicit common US launch jurisdiction')
         if (self.openai_pricing.provider != 'openai' or self.tavily_pricing.provider != 'tavily'
@@ -320,7 +337,9 @@ async def _ensure_child(ledger, identifier, item, context):
     research = ResearchContext(plan=SourceResearchPlan.model_validate(item['candidate']['plan']),
                                openai_pricing=context.openai_pricing, tavily_pricing=context.tavily_pricing,
                                role_settings=context.role_settings, purpose=context.purpose,
-                               pipeline_prefix=context.pipeline_prefix, pipeline_prompts=context.pipeline_prompts)
+                               pipeline_prefix=context.pipeline_prefix, pipeline_prompts=context.pipeline_prompts,
+                               parent_collection_id=context.reassessment_of_collection_id,
+                               parent_run_id=item['candidate'].get('parent_run_id'))
     async with ledger.locked(ledger.run_id, fenced=True) as (conn, study, __):
         collection = await (await conn.execute('SELECT selected_count,membership_hash FROM app.collections WHERE id=%s', (identifier,))).fetchone()
         if collection['selected_count'] != 20 or not collection['membership_hash']:
@@ -435,6 +454,10 @@ async def _publish(ledger, identifier, context, data_dir, public_model, publish_
                              'business_budget_usd': str(context.config.scenario.business_budget_usd),
                              'days': context.config.scenario.days,
                              'jurisdiction': context.config.scenario.jurisdiction}, 'models': models}
+    if context.reassessment_of_collection_id:
+        snapshot.update(scoring_policy_version='1.5.2',
+                        reassessment_of_collection_id=context.reassessment_of_collection_id,
+                        processing_order=list(context.processing_order))
     # Publication is a small local atomic file write, never an external call.
     # Fence it so a superseded coordinator cannot replace a newer snapshot.
     async with ledger.locked(ledger.run_id, fenced=True):

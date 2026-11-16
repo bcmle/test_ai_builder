@@ -1,6 +1,26 @@
 # 08. Архитектура, конфигурация и API
 
-Статус: APPROVED BASELINE v1.3.1 (пользователь, 16.11.2026; доменное дополнение к v1.3).
+Статус: спецификация с дополнением v1.5.2 по поручению пользователя 16.11.2026; реализация нового контракта не выполнена этим шагом.
+
+## Контракт исполнения и публикации v1.5.2
+
+[15-conditional-scoring](15-conditional-scoring.md) имеет приоритет для новой политики допуска и рейтинга. В этом изменении обновляются спецификации: приложение, конфиги, миграции, production snapshots и платные исследования не меняются автоматически. `scoring_policy_version` входит в новый frozen config и публичный снимок; роли, state schema и graph version фиксируются согласованно. Legacy run возобновляется по исходной политике и своим schemas/hashes; новая политика требует нового run/revision с явным происхождением. Сохранённые evidence snapshots можно использовать только с исходными provenance и manifest refs, оплаченные receipts не переписываются и не считаются выполнением новых ролевых входов.
+
+Детерминированный eligibility-агрегатор маршрутизирует confirmed/conditional через одинаковые обязательные Critic → neutral handoff → Verifier → reconciliation → factors → card validation. Разрешённые условные пробелы новой политики — F01/F03/F05–F07; F02/F04/F08/F09/F10 по-прежнему требуют pass. Unknown F03 после исследования допускает conditional только при явно заданных рынке/нашей роли и условии проверки до первого клиента. Подтверждённое требование собственной специальной лицензии блокирует конкретный сценарий; существенное неразрешённое противоречие о применимости найденного требования остаётся unresolved. Неисследованный/неописанный сценарий и технический сбой не становятся conditional. Blocked/unresolved сохраняют отдельную карточку состояния; предметный unresolved после завершённых критериев заканчивает маршрут как needs_review/unavailable и не становится технической неполнотой из-за незапущенных downstream-стадий. После новых доказательств eligibility пересчитывается до публикации. Условный score требует всех пяти обоснованных значений/диапазонов и завершённых проверок. Неполнота обязательных стадий при eligibility=confirmed/conditional даёт provisional вне рейтинга только при имеющемся предварительном расчёте; без него либо при отсутствии обоснованного фактора — unavailable. Открытые разрешённые условия хранятся в `eligibility_conditions[]` и видны вместе с их влиянием на сроки/затраты/факторы.
+
+Другой рынок не является resume с изменённым полем: требуется новый явно зафиксированный launch_context/assessment scope и новый анализ критериев и S01–S05, связанный с исходным результатом по правилам run/revision. Исторические результаты и расходы сохраняются; прежний score не переносится в новый рынок. Аналоги/покупатели/публикации могут обосновать рынок-кандидат, но не автоматический legal pass; лицензии третьих лиц не заменяют оценку нашей роли. Версия v1.5 с прежним gate F03 не переинтерпретируется как v1.5.2.
+
+Публичная проекция и будущий ranking API возвращают раздельные final/conditional rankings, внутри каждого — группы goal_feasibility; общего места нет. Выдача карточки, сравнения, экспорта и счётчиков использует ту же версию политики/ревизии. Legacy-снимок остаётся читаемым с исходными статусами и меткой версии; UI не превращает его прежний needs_review в conditional и не вычисляет отсутствующий балл. Существующие пути и углублённые анализы с parent/derived/supplemental связями сохраняются.
+
+## Исполнение обзора юридических документов аналогов — v1.5.2
+
+В research добавляется обязательная, явно учитываемая работа по поиску/чтению доступных релевантных Legal/Terms, Privacy, DPA, AUP и лицензионных документов каждого аналога из manifest, включая дополнительные компании/продукты. Используются существующие search/fetch adapters, SourceSnapshot, Claim/EvidenceLink, P02/P02V и receipts; новый автономный агент/провайдер не требуется. Результат `AnalogueLegalReview` по 03 связывает analogue_id, scope и revision с реальными действиями доступа и аналитическими выводами. Ключ идемпотентности/хеш входа учитывает конкретный analogue_id, пакет документов и версию политики; review одной компании не подменяет автоматически review другого продукта или scope.
+
+До завершённого final/conditional card validation проверяет наличие completed review каждого используемого аналога. Требуется выполненный ограниченный поиск и анализ доступных релевантных материалов, а не обязательное нахождение документов. Coverage reviewed/insufficient/not_found/unavailable хранится отдельно от execution_state. Внешние 404, login, robots и таймауты конкретного URL после предусмотренных попыток — исходы доступа/gaps и могут завершить review как unavailable; их не обходят. Ошибка исполнения/анализа/валидации или потеря результата оставляют неполный этап, а не completed gap. Общие лимиты и паузы бюджета по 10 сохраняются; исчерпание бюджета до выполнения работы не считается отсутствием документов.
+
+Completed not_found/unavailable/insufficient не создают автоматический business fail и сами по себе не запрещают conditional. Допуск и пять факторов проверяются по 15; необходимые дополнительные F01/F03-проверки используют адресные официальные источники в существующих лимитах. Terms фиксируют договорные заявления поставщика, не дают blanket lawful pass; software license, regulatory license, governing law и география обслуживания различаются в данных/валидации. Публичная проекция включает review refs, coverage, доступные ссылки/версии/даты, короткие релевантные фрагменты, границы применимости и gaps/recheck conditions без приватных payload. Старые snapshots без review не маркируются как выполненные по v1.5.2.
+
+Fetch переиспользует разрешённые canonical URL/snapshot refs с исходным provenance, исключая повторные загрузки одного уже прочитанного материала в рамках допустимой актуальности. Один URL не доказывает неизменность версии; новая фактическая загрузка сохраняется отдельным snapshot. Общий документ может входить в несколько reviews с отдельной оценкой применимости. Обнаруженные после замораживания пакета новые документы/аналог требуют существующего механизма новой ревизии/run с lineage и пересчётом затронутых зависимостей, не изменения frozen inputs/receipts на месте. Это контракт будущей реализации; дополнительные платные вызовы, лимиты, миграции и деплой данным изменением не запускаются.
 
 ## Исполняемый шаг v1.4
 
@@ -44,8 +64,8 @@ Resume загружает checkpoint совместимой версии гра�
 | GET /runs | cursor, limit | Только опубликованные run summaries для гостя; владельцу также черновики |
 | GET /runs/{id} | revision_id nullable, view=published/draft | Статус, счётчики, scenario, control_version, revision_id |
 | GET /runs/{id}/models | revision_id, query, group, buyer, revenue, market, status, sort, cursor, limit | Фильтрация всего снимка до пагинации; sort=score_asc/score_desc/name, не меняет места |
-| GET /runs/{id}/ranking | revision_id | Возрастающий final ranking; provisional отдельно |
-| GET /runs/{id}/models/{model_id} | revision_id | Карточка из того же manifest с паспортами и разрешёнными источниками |
+| GET /runs/{id}/ranking | revision_id | Для v1.5.2: scoring_policy_version, раздельные final/conditional rankings с возрастающим баллом внутри goal_feasibility-группы; provisional/unavailable отдельно без места; legacy по исходной версии |
+| GET /runs/{id}/models/{model_id} | revision_id | Карточка из того же manifest с паспортами и разрешёнными источниками; для v1.5.2 — публичные обзоры юридических документов всех её аналогов по 03 |
 | GET /runs/{id}/audit | cursor, limit | Публичная очищенная проекция журнала; private payload только владельцу |
 | GET /runs/{id}/export | format=json/md | Опубликованный безопасный экспорт |
 | POST /runs | config_version, mode, source_run_id nullable; Idempotency-Key | 202 run_id; тот же ключ+тело возвращает прежний run, другое тело с тем же ключом — 409 |
@@ -62,7 +82,7 @@ GET без revision_id выбирает published_revision_id; владелец 
 
 ## Группы конфигурации
 
-schema_version; launch_context; discovery(target=20, directions, excluded_markets); criteria[]; scoring(factors, weights, rubrics, rounding); providers(role_model_ids, API endpoint allowlist); prompts(versions); limits(time, concurrency, requests, tokens, cost); source_policy; publishing. Secret values только env/secret files, конфиг хранит имена переменных. Невалидный вес, отсутствующий model ID или отсутствующие ключи блокируют live run до расхода средств. Replay не требует ключей, но маркируется отдельно.
+schema_version; launch_context; discovery(target=20, directions, excluded_markets); criteria[]; scoring(factors, weights, rubrics, rounding); providers(role_model_ids, API endpoint allowlist); prompts(versions); limits(time, concurrency, requests, tokens, cost); source_policy; publishing. Новая версия дополнительно фиксирует scoring_policy_version и политику eligibility/условий/раздельных рейтингов по 15; legacy-сериализация не получает эти поля задним числом. Secret values только env/secret files, конфиг хранит имена переменных. Невалидный вес, отсутствующий model ID или отсутствующие ключи блокируют live run до расхода средств. Replay не требует ключей, но маркируется отдельно.
 
 ## Дополнение v0.2: стек для выбранного объёма и Aeza
 

@@ -24,7 +24,7 @@
 
   const bar = document.querySelector('[data-compare-bar]');
   if (bar) {
-    const key = `business-models-compare:${bar.dataset.run}`;
+    const key = `business-models-compare:${bar.dataset.run}:${bar.dataset.revision}`;
     const boxes = [...document.querySelectorAll('[data-compare-id]')];
     let selected = [];
     try { selected = JSON.parse(sessionStorage.getItem(key) || '[]'); } catch (_) {}
@@ -67,7 +67,7 @@
         if (!response.ok) return;
         const snapshot = await response.json();
         if (snapshot.revision_id !== progress.dataset.progressRevision) location.reload();
-        if (snapshot.status !== 'running') clearInterval(timer);
+        if (snapshot.status !== 'running' && snapshot.completed_count >= snapshot.selected_count) clearInterval(timer);
       } catch (_) { /* Keep the last published snapshot visible. */ }
     }, 10000);
   }

@@ -71,6 +71,55 @@ class Eligibility(StrEnum):
     PASS = "pass"
 
 
+class ConditionalEligibility(StrEnum):
+    CONFIRMED = 'confirmed'
+    CONDITIONAL = 'conditional'
+    BLOCKED = 'blocked'
+    UNRESOLVED = 'unresolved'
+
+
+CONDITIONAL_CRITERIA = frozenset({'F01', 'F03', 'F05', 'F06', 'F07'})
+
+
+class EligibilityCondition(Contract):
+    """An unresolved assumption for analysis, never a factual approval."""
+    condition_id: str
+    criterion_id: Literal['F01', 'F03', 'F05', 'F06', 'F07']
+    assumption: str = Field(min_length=1, max_length=3000)
+    required_check: str = Field(min_length=1, max_length=3000)
+    impact_on_factors: str = Field(min_length=1, max_length=3000)
+    evidence_ids: list[str]
+
+    @model_validator(mode='after')
+    def meaningful(self):
+        if not all(value.strip() for value in
+                   (self.condition_id, self.assumption, self.required_check, self.impact_on_factors)):
+            raise ValueError('Eligibility conditions require nonblank assumptions, checks and effects')
+        return self
+
+
+def conditional_eligibility(criteria: list[Criterion], required: list[str], *,
+                            unknown_kinds: dict[str, str | None],
+                            conditions: list[EligibilityCondition],
+                            legal_reviews_complete: bool) -> ConditionalEligibility:
+    """Only independently classified evidence gaps may use the v1.5.2 exception."""
+    legacy = eligibility(criteria, required)
+    if legacy == Eligibility.FAIL:
+        return ConditionalEligibility.BLOCKED
+    if legacy == Eligibility.INCOMPLETE or not legal_reviews_complete:
+        return ConditionalEligibility.UNRESOLVED
+    unknown = {c.criterion_id for c in criteria if c.result == 'unknown'}
+    by_criterion = {c.criterion_id: c for c in conditions}
+    if len(by_criterion) != len(conditions):
+        raise ValueError('Duplicate eligibility condition')
+    if set(by_criterion) - unknown:
+        raise ValueError('Eligibility condition must describe an unknown criterion')
+    if (unknown - CONDITIONAL_CRITERIA or set(by_criterion) != unknown
+            or any(unknown_kinds.get(k) != 'evidence_gap' for k in unknown)):
+        return ConditionalEligibility.UNRESOLVED
+    return ConditionalEligibility.CONDITIONAL if unknown else ConditionalEligibility.CONFIRMED
+
+
 def eligibility(criteria: list[Criterion], required: list[str]) -> Eligibility:
     ids = [c.criterion_id for c in criteria]
     if len(ids) != len(set(ids)) or set(ids) - set(required):
@@ -85,7 +134,7 @@ def eligibility(criteria: list[Criterion], required: list[str]) -> Eligibility:
 
 
 class Score(Contract):
-    status: Literal["final", "unavailable"]
+    status: Literal["final", "conditional", "provisional", "unavailable"]
     value: Decimal | None
     bounds: Interval | None
     goal_feasibility: Literal["feasible", "uncertain", "infeasible"]
@@ -103,7 +152,7 @@ def feasibility(days: Interval | None, cost: Interval | None, budget: Decimal,
 def score(factors: dict[str, Factor | None], weights: dict[str, Decimal], *,
           days: Interval | None, cost: Interval | None, budget: Decimal,
           resources: Literal["available", "conditional", "unavailable", "unknown"],
-          checks_complete: bool) -> Score:
+          checks_complete: bool, conditional: bool = False) -> Score:
     if not weights or any(w < 0 for w in weights.values()) or sum(weights.values()) != 100:
         raise ValueError("Nonnegative weights must sum to 100")
     if set(factors) != set(weights):
@@ -113,13 +162,14 @@ def score(factors: dict[str, Factor | None], weights: dict[str, Decimal], *,
         return Score(status="unavailable", value=None, bounds=None, goal_feasibility=goal)
     low = sum(weights[k] * f.low / 4 for k, f in factors.items())
     high = sum(weights[k] * f.high / 4 for k, f in factors.items())
-    return Score(status="final", value=low, bounds=Interval(low=low, high=high), goal_feasibility=goal)
+    return Score(status="conditional" if conditional else "final", value=low,
+                 bounds=Interval(low=low, high=high), goal_feasibility=goal)
 
 
 def rank_key(item: tuple[str, str, Score]):
     """Ascending groups, then unrounded conservative score. IDs only break display ties."""
     identifier, name, result = item
-    if result.status != "final":
+    if result.status not in {"final", "conditional"}:
         raise ValueError("Unfinished assessments cannot be ranked")
     return ({"infeasible": 0, "uncertain": 1, "feasible": 2}[result.goal_feasibility],
             result.value, name.casefold(), identifier)

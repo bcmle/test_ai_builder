@@ -70,3 +70,32 @@ def test_invalid_numeric_estimates(value):
 
 def test_unknown_resources_are_not_available():
     assert feasibility(Interval(low=1, high=2), Interval(low=1, high=2), D(10), "unknown") == "uncertain"
+
+
+@pytest.mark.parametrize('criterion', [f'F{i:02}' for i in range(1, 11)])
+def test_only_explicitly_permitted_completed_evidence_gaps_can_be_conditional(criterion):
+    from ai_builder.domain import CONDITIONAL_CRITERIA, EligibilityCondition, conditional_eligibility
+    criteria = [result().model_copy(update={'criterion_id':f'F{i:02}',
+                'result':'unknown' if f'F{i:02}' == criterion else 'pass'}) for i in range(1,11)]
+    conditions = [EligibilityCondition(condition_id='condition-'+criterion, criterion_id=criterion,
+        assumption='The described role can meet ordinary launch requirements.',
+        required_check='Obtain local role-specific advice before the first customer.',
+        impact_on_factors='Add the bounded paid review cost and lead time.', evidence_ids=['e1'])] if criterion in CONDITIONAL_CRITERIA else []
+    evaluate = lambda **overrides: conditional_eligibility(criteria, [c.criterion_id for c in criteria],
+        **dict(unknown_kinds={criterion:'evidence_gap'}, conditions=conditions, legal_reviews_complete=True) | overrides)
+    assert evaluate() == ('conditional' if conditions else 'unresolved')
+    assert evaluate(legal_reviews_complete=False) == 'unresolved'
+    assert evaluate(unknown_kinds={criterion:'material_conflict'}) == 'unresolved'
+    assert evaluate(conditions=[]) == 'unresolved'
+    criteria[0] = result('technical_failed', None)
+    assert evaluate() == 'unresolved'
+
+
+def test_conditional_score_uses_identical_math_but_cannot_skip_checks(config):
+    factors = {f.id:Factor(low=2, high=3) for f in config.factors}
+    kwargs = dict(days=Interval(low=14, high=15), cost=Interval(low=100, high=200),
+                  budget=D(15000), resources='conditional', conditional=True)
+    result = score(factors, {f.id:f.weight for f in config.factors}, checks_complete=True, **kwargs)
+    assert result.status == 'conditional' and result.value == 50 and result.bounds.high == 75
+    result = score(factors, {f.id:f.weight for f in config.factors}, checks_complete=False, **kwargs)
+    assert result.status == 'unavailable' and result.value is None

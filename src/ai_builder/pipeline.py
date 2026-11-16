@@ -7,11 +7,12 @@ from datetime import datetime, timezone
 from typing import Literal, TypedDict
 
 from langgraph.graph import StateGraph, START, END
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_serializer, model_validator
 
 from .config import Configuration
 from .domain import (Contract, Criterion, CriterionV14, Claim, HandoffClaim, Risk, Factor, Interval, eligibility,
-                     handoff, reconcile, score)
+                     handoff, reconcile, score, DesignBasis, EligibilityCondition, CONDITIONAL_CRITERIA,
+                     conditional_eligibility)
 from .pg_execution import FencedPostgresSaver
 from .pg_ledger import digest
 from .store import Conflict
@@ -33,6 +34,14 @@ class ScopePacket(Contract):
     variant_id: str
     neutral_model_description: str
     documents: list[Document]
+    legal_source_reviews: list[dict] = Field(default_factory=list)
+
+    @model_serializer(mode='wrap')
+    def legacy_compatible(self, handler):
+        value = handler(self)
+        if not self.legal_source_reviews:
+            value.pop('legal_source_reviews', None)
+        return value
 
 
 class Research(Contract):
@@ -41,6 +50,51 @@ class Research(Contract):
 
 class ResearchV14(Contract):
     criteria: list[CriterionV14]
+
+
+class LegalClause(Contract):
+    evidence_id: str
+    source_snapshot_id: str
+    excerpt: str = Field(min_length=1, max_length=1800)
+    locator: str = Field(min_length=1)
+    finding: str = Field(min_length=1, max_length=1800)
+
+    @model_validator(mode='after')
+    def meaningful(self):
+        if not all(value.strip() for value in (self.excerpt, self.locator, self.finding)):
+            raise ValueError('Legal quotations and findings cannot be blank')
+        return self
+
+
+class LegalReviewAnalysis(Contract):
+    analogue_id: str
+    coverage: Literal['reviewed', 'insufficient', 'not_found', 'unavailable']
+    supplier_role: str = Field(min_length=1, max_length=2500)
+    our_role_applicability: str = Field(min_length=1, max_length=2500)
+    clauses: list[LegalClause] = Field(max_length=16)
+    gaps: list[str] = Field(max_length=20)
+
+    @model_validator(mode='after')
+    def meaningful(self):
+        if not self.supplier_role.strip() or not self.our_role_applicability.strip() or any(not gap.strip() for gap in self.gaps):
+            raise ValueError('Legal role analysis and stated gaps cannot be blank')
+        return self
+
+
+class ResearchV15(ResearchV14):
+    legal_reviews: list[LegalReviewAnalysis]
+
+
+class ConditionProposal(Contract):
+    assumption: str = Field(min_length=1, max_length=3000)
+    required_check: str = Field(min_length=1, max_length=3000)
+    impact_on_factors: str = Field(min_length=1, max_length=3000)
+
+    @model_validator(mode='after')
+    def meaningful(self):
+        if not all(value.strip() for value in (self.assumption, self.required_check, self.impact_on_factors)):
+            raise ValueError('A condition needs nonblank assumptions, checks and effects')
+        return self
 
 
 class Applicability(Contract):
@@ -54,6 +108,36 @@ class ApplicabilityItem(Applicability):
 
 class ApplicabilityBatch(Contract):
     items: list[ApplicabilityItem]
+
+
+class NormativeBasis(LegalClause):
+    authority_type: Literal['law', 'official_guidance', 'regulatory_register']
+    authority_name: str = Field(min_length=1)
+
+
+class ApplicabilityItemV15(ApplicabilityItem):
+    evidence_ids: list[str]
+    design_basis: list[DesignBasis] = Field(default_factory=list, max_length=8)
+    normative_basis: list[NormativeBasis] = Field(default_factory=list, max_length=4)
+    unknown_kind: Literal['evidence_gap', 'material_conflict', 'undefined_scenario'] | None
+    condition: ConditionProposal | None
+
+    @model_validator(mode='after')
+    def coherent(self):
+        if not self.reason.strip():
+            raise ValueError('Independent applicability requires a nonblank explanation')
+        if self.status != 'insufficient' and (self.unknown_kind is not None or self.condition is not None):
+            raise ValueError('Only insufficient evidence may describe an unresolved condition')
+        if self.status == 'insufficient' and self.unknown_kind is None:
+            raise ValueError('Insufficient requires an explicit uncertainty classification')
+        if self.condition is not None and (self.criterion_id not in CONDITIONAL_CRITERIA
+                                           or self.unknown_kind != 'evidence_gap'):
+            raise ValueError('A condition cannot replace a strict gate or material conflict')
+        return self
+
+
+class ApplicabilityBatchV15(Contract):
+    items: list[ApplicabilityItemV15]
 
 
 class Critique(Contract):
@@ -143,6 +227,67 @@ V14_PROMPTS['factors'] += (
     'Copy quotations and evidence_id/snapshot_id pairs exactly. Keep forecast intervals and their passport quantity_estimate '
     'identical. A proposed action is a judgment, not a sourced fact about something already done.')
 
+
+V15_PROMPTS = dict(V14_PROMPTS)
+V15_PROMPTS['research'] += (
+    ' Scoring policy 1.5.2 preserves every honest pass/fail/unknown; never force pass to obtain a score. '
+    'A completed evidence gap for F01/F03/F05/F06/F07 can later be conditionally eligible; you do not decide eligibility. '
+    'F09 excludes an official government service, not an independent commercial vendor selling to government. '
+    'For EVERY analogue in legal_source_reviews, return one legal_reviews analysis with the exact analogue_id. '
+    'Examine the supplied legal documents; cite exact evidence_id/source_snapshot_id/excerpt/locator in clauses, '
+    'distinguish the supplier contractual role from our proposed role, and list material gaps and launch checks. '
+    'The acquisition metadata reports actual searches/access; do not claim an unavailable document was read. '
+    'Use coverage reviewed for reviewed accessible documents, insufficient for material remaining document gaps; '
+    'preserve not_found/unavailable when no legal documents were acquired. Missing documents do not prove illegality. '
+    'Terms, privacy policies and DPA establish contractual statements, not actual legal compliance. Governing law '
+    'is not a list of permitted markets; a software licence is not a regulatory licence; silence is not exemption. '
+    'Compare actual roles and jurisdiction; do not transfer the analogue or partner licence to our business. '
+    'Keep clauses concise: cite the most relevant provisions, with gaps for unread or insufficient material.')
+V15_PROMPTS['applicability'] += (
+    ' Scoring policy 1.5.2: independently evaluate every requested criterion, including unknown research outcomes '
+    'which are not shown. Return evidence_ids and permitted exact design_basis for your conclusion. '
+    'F01/F03 supports_pass must be grounded in applicable external official legal/licensing material, not only '
+    'supplier Terms, product availability, public customers, or absence of a restriction. '
+    'For F01/F03 supports_pass include normative_basis with an exact quotation, evidence/snapshot IDs, locator, '
+    'authority_type law/official_guidance/regulatory_register, authority_name and finding applying it to OUR role. '
+    'This must be an authoritative external source, not the analogue website or its contract documents. '
+    'If no such source is supplied, use insufficient and an honest evidence_gap condition instead of inventing a basis. '
+    'For insufficient, classify unknown_kind: evidence_gap when the described role and named market have been '
+    'researched but evidence is incomplete; material_conflict when there is unresolved material contradiction '
+    'about an identified prohibition/licence requirement or operating design; undefined_scenario when activity/role '
+    'or market is not described enough for assessment. Do not reclassify a known prohibition or required own licence '
+    'as an assumption. F10 unsupported scale remains insufficient, never a global fail. '
+    'Only evidence_gap for F01/F03/F05/F06/F07 may include condition {assumption, required_check, impact_on_factors}. '
+    'For every such eligible gap, explicitly state the unproven scenario assumption, a concrete check BEFORE first '
+    'customer, and consequences for time/cost/resources if not satisfied. For all other statuses return condition=null. '
+    'F02/F04/F08/F09/F10 need support for pass, never a conditional waiver. '
+    'F09 tests an official government service; a government customer does not itself fail an independent product. '
+    'Legal-source not_found/unavailable/insufficient is a document gap, not an automatically failed criterion. '
+    'Do not infer a legal approval from a contractual allocation of liability. Return unknown_kind=null for supports_pass '
+    'or supports_fail. You classify evidence; the application computes eligibility and never receives a model-made score.')
+V15_PROMPTS['critic'] += (
+    ' The described scenario may be assessed conditionally while legal/licensing questions remain open. '
+    'Examine assumptions honestly; distinguish missing final legal diligence from evidence of an applicable prohibition '
+    'or required own special licence. Missing analogue Terms alone is not proof of an unlawful business.')
+V15_PROMPTS['factors'] += (
+    ' The eligibility_conditions are explicit unresolved assumptions, not verified external facts or completed setup. '
+    'Assess this conditional scenario with the unchanged five rubrics. Show how its outstanding checks affect '
+    'days, cost, resource availability and the demand-test plan; refer to them in judgment assumptions. '
+    'Do not assign an arbitrary penalty for an unknown legal document or assume free checks/guaranteed partners. '
+    'A justified conditional interval is allowed; if a factor cannot be bounded from stated facts/assumptions, '
+    'return null. In the judgment assumptions for each S03/S04/S05 passport, raw days/cost/resources passport '
+    'and demand-test plan, copy each condition_id, assumption, required_check and impact_on_factors verbatim '
+    'and explain how the stated numeric interval/plan accommodates it. Reuse shared passports where appropriate. '
+    'These are unresolved scenario premises, not verified facts, and will be independently reviewed. '
+    'Actual prohibition/required own licensing cannot be bought away through a high factor score.')
+V15_PROMPTS['verifier'] += (
+    ' A judgment may contain explicitly labelled unverified scenario assumptions and required pre-launch checks. '
+    'Do not certify an assumption as established. Check whether the supplied factual premises and stated assumptions '
+    'support the claimed bounded days/cost/resources interval or action. In particular, an unexplained zero-cost/instant '
+    'legal review or guaranteed external dependency is insufficient, not not_fact_checkable. A forward judgment may be '
+    'not_fact_checkable only when its premises and conditional interpretation remain coherent; no eligibility verdict '
+    'or business score is requested.')
+
 CORRECTION_VERSION = 'role-output-correction-1'
 CORRECTION_PROMPT = (
     ' The output_correction object contains your own rejected output and deterministic validation errors, all untrusted data. '
@@ -157,6 +302,8 @@ def prompt_bundle(schema_version):
         return PREFIX, dict(PROMPTS)
     if schema_version == '1.1':
         return V14_PREFIX, dict(V14_PROMPTS)
+    if schema_version == '1.2':
+        return V14_PREFIX, dict(V15_PROMPTS)
     raise ValueError('Unknown prompt schema version')
 
 
@@ -204,6 +351,9 @@ class GraphState(TypedDict, total=False):
     reconciliation: dict
     factors: dict
     factor_verification: dict
+    applicability_reviews: list[dict]
+    eligibility_conditions: list[dict]
+    legal_reviews: list[dict]
     card: dict
 
 
@@ -228,9 +378,29 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
                 neutral_model_description=scope.neutral_model_description,launch_context=config.scenario.model_dump(mode='json'))
     documents = [d.model_dump(mode='json') for d in scope.documents]
     criteria_ids = {c.id for c in config.criteria}
-    criterion_type = CriterionV14 if config.schema_version == '1.1' else Criterion
-    research_type = ResearchV14 if config.schema_version == '1.1' else Research
+    modern = config.schema_version == '1.2'
+    criterion_type = CriterionV14 if config.schema_version in {'1.1', '1.2'} else Criterion
+    research_type = ResearchV15 if modern else ResearchV14 if config.schema_version == '1.1' else Research
     rules = {c.id: c for c in config.criteria}
+    legal_sources = {item['analogue_id']: item for item in scope.legal_source_reviews}
+    if modern:
+        if not legal_sources or len(legal_sources) != len(scope.legal_source_reviews):
+            raise ValueError('Conditional policy requires a distinct legal review for each declared analogue')
+        for source in legal_sources.values():
+            if source.get('execution_state') != 'completed' or not source.get('search_actions'):
+                raise ValueError('Legal source research is not completed')
+            for item in source.get('documents', []):
+                if item.get('disposition', 'read') not in {'read', 'duplicate'}:
+                    continue
+                doc = docs.get(item.get('evidence_id'))
+                if not doc or doc.snapshot_id != item.get('snapshot_id') or doc.url not in {item.get('url'), item.get('final_url')}:
+                    raise ValueError('Legal source document is outside this frozen scope')
+
+    def validate_design(criterion_id, bases):
+        for basis in bases:
+            if (not rules[criterion_id].allow_design_basis or basis.assessment_scope_id != scope.scope_id
+                    or basis.excerpt not in scope.neutral_model_description):
+                raise ValueError('Design basis is not permitted or does not quote this frozen operating design')
 
     def validate_claims(claims):
         ids = {c.claim_id for c in claims}
@@ -251,7 +421,7 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
                 allowed_urls.add(doc.url)
             if not set(c.source_urls)<=allowed_urls:
                 raise ValueError('Unregistered claim URL')
-            if config.schema_version == '1.1':
+            if config.schema_version in {'1.1', '1.2'}:
                 if not c.method or not c.confidence or not c.confidence_reason:
                     raise ValueError('New claim requires method, confidence and confidence reason')
                 if c.kind == 'judgment' and not c.assumptions:
@@ -331,22 +501,104 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
         for c in result.criteria:
             if not set(c.evidence_ids)<=docs.keys():
                 raise ValueError('Unknown criterion evidence; evidence_ids accepts document evidence_id only, never assessment_scope_id')
-            for basis in getattr(c, 'design_basis', []):
-                if (not rules[c.criterion_id].allow_design_basis or basis.assessment_scope_id != scope.scope_id
-                        or basis.excerpt not in scope.neutral_model_description):
-                    raise ValueError('Design basis is not permitted or does not quote this frozen operating design')
+            validate_design(c.criterion_id, getattr(c, 'design_basis', []))
+        if modern:
+            if any(c.state != 'completed' for c in result.criteria):
+                raise ValueError('Conditional research requires completed criterion evaluations; technical failure is not unknown')
+            if (len(result.legal_reviews) != len(legal_sources)
+                    or {r.analogue_id for r in result.legal_reviews} != set(legal_sources)):
+                raise ValueError('Legal analysis must cover every declared analogue exactly once')
+            for review in result.legal_reviews:
+                source = legal_sources[review.analogue_id]
+                legal_ids = {d.get('evidence_id') for d in source.get('documents', [])
+                             if d.get('disposition', 'read') in {'read', 'duplicate'}}
+                if not legal_ids and (review.clauses or review.coverage != source['coverage'] or not review.gaps):
+                    raise ValueError('Unavailable legal documents require honest coverage and explicit gaps')
+                if legal_ids and (not review.clauses or review.coverage not in {'reviewed', 'insufficient'}):
+                    raise ValueError('Acquired legal documents require quoted substantive review')
+                for clause in review.clauses:
+                    doc = docs.get(clause.evidence_id)
+                    if (clause.evidence_id not in legal_ids or not doc or doc.snapshot_id != clause.source_snapshot_id
+                            or clause.excerpt not in doc.text):
+                        raise ValueError('Legal clause is not an exact quotation from this analogue document')
 
     async def research(state):
-        result = await call('research',{**base,'documents':documents,'criteria':[c.model_dump() for c in config.criteria]},
-                            research_type,validator=validate_research)
-        return {'research':result.model_dump(mode='json')}
+        packet = {**base,'documents':documents,'criteria':[c.model_dump() for c in config.criteria]}
+        if modern:
+            packet['legal_source_reviews'] = scope.legal_source_reviews
+        result = await call('research',packet,research_type,validator=validate_research)
+        output = {'research':result.model_dump(mode='json')}
+        if modern:
+            output['legal_reviews'] = [{**legal_sources[r.analogue_id],
+                'source_coverage': legal_sources[r.analogue_id]['coverage'], 'coverage':r.coverage,
+                'supplier_role':r.supplier_role, 'our_role_applicability':r.our_role_applicability,
+                'clauses':[c.model_dump(mode='json') for c in r.clauses], 'analysis_gaps':r.gaps}
+                for r in result.legal_reviews]
+        return output
 
     def validate_applicability(result, selected):
         if len(result.items) != len(selected) or {item.criterion_id for item in result.items} != selected:
             raise ValueError('Applicability must cover every requested criterion exactly once')
+        if modern:
+            for item in result.items:
+                if not set(item.evidence_ids) <= docs.keys():
+                    raise ValueError('Applicability evidence must belong to this scope')
+                validate_design(item.criterion_id, item.design_basis)
+                if item.status != 'insufficient' and not (item.evidence_ids or item.design_basis):
+                    raise ValueError('Applicability support requires documentary evidence or permitted design basis')
+                if item.criterion_id in {'F01','F03'} and item.status == 'supports_pass':
+                    if not item.normative_basis:
+                        raise ValueError('F01/F03 pass requires quoted official normative basis; otherwise return an honest evidence gap')
+                    from .legal_sources import LegalAnalogue, is_official_url
+                    analogues = [LegalAnalogue.model_validate({key:source[key] for key in LegalAnalogue.model_fields})
+                                 for source in legal_sources.values()]
+                    contractual_ids = {d.get('evidence_id') for source in legal_sources.values()
+                                       for d in source.get('documents', [])}
+                    for basis in item.normative_basis:
+                        doc = docs.get(basis.evidence_id)
+                        if (not doc or basis.evidence_id not in item.evidence_ids
+                                or doc.snapshot_id != basis.source_snapshot_id or basis.excerpt not in doc.text
+                                or basis.evidence_id in contractual_ids
+                                or any(is_official_url(doc.url, analogue) for analogue in analogues)):
+                            raise ValueError('Normative basis must quote a supplied external authority, not analogue contracts or webpages')
+                if item.status == 'insufficient' and item.unknown_kind == 'evidence_gap' and item.criterion_id in CONDITIONAL_CRITERIA and item.condition is None:
+                    raise ValueError('Eligible evidence gap requires an explicit assumption and launch check')
+                if item.condition is not None and item.criterion_id in {'F05','F06','F07'} and not item.design_basis:
+                    raise ValueError('Risk-allocation condition requires a quoted explicit operating design')
+
+    def conditional_result(initial, reviewed, state):
+        checked, conditions = [], []
+        for previous in initial:
+            item = reviewed[previous.criterion_id]
+            if previous.result == 'fail' and previous.criterion_id != 'F10' and item.status != 'supports_fail':
+                item = item.model_copy(update={'status':'insufficient', 'unknown_kind':'material_conflict',
+                    'condition':None, 'reason':'A researched exclusion conflicts with independent applicability; '
+                    'resolve the cited prohibition or operating incompatibility before scoring. '+item.reason})
+                reviewed[previous.criterion_id] = item
+            status = {'supports_pass':'pass', 'supports_fail':'fail', 'insufficient':'unknown'}[item.status]
+            if previous.criterion_id == 'F10' and status == 'fail':
+                status = 'unknown'
+            checked.append(CriterionV14(criterion_id=previous.criterion_id, state='completed', result=status,
+                reason=item.reason, evidence_ids=item.evidence_ids, design_basis=item.design_basis))
+            if status == 'unknown' and item.condition is not None:
+                conditions.append(EligibilityCondition(condition_id='condition-'+item.criterion_id,
+                    criterion_id=item.criterion_id, evidence_ids=item.evidence_ids, **item.condition.model_dump()))
+        status = conditional_eligibility(checked, list(criteria_ids),
+            unknown_kinds={key:item.unknown_kind for key,item in reviewed.items()}, conditions=conditions,
+            legal_reviews_complete=bool(state.get('legal_reviews')) and len(state['legal_reviews']) == len(legal_sources))
+        return {'criteria':[c.model_dump(mode='json') for c in checked], 'eligibility':status.value,
+                'eligibility_conditions':[c.model_dump(mode='json') for c in conditions],
+                'applicability_reviews':[item.model_dump(mode='json') for item in reviewed.values()]}
 
     async def applicability(state):
         initial = research_type.model_validate(state['research']).criteria
+        if modern:
+            # Independent reviewer receives acquisition work and raw evidence, never author verdicts/conditions.
+            packet = {**base, 'criteria_rules':[c.model_dump() for c in config.criteria],
+                      'documents':documents, 'legal_source_reviews':scope.legal_source_reviews}
+            result = await call('applicability',packet,ApplicabilityBatchV15,
+                                validator=lambda value: validate_applicability(value, criteria_ids))
+            return conditional_result(initial, {item.criterion_id:item for item in result.items}, state)
         selected = {c.criterion_id for c in initial if c.result in {'pass','fail'}}
         reviewed = {}
         if selected:
@@ -395,7 +647,7 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
             if attempt==0:
                 critique = await call('repair',{**base,'documents':documents,'critique':critique.model_dump(mode='json'),'reason':gate.reason},
                                       Critique,validator=validate_critique)
-        return {'neutral':False,'eligibility':'needs_review'}
+        return {'neutral':False,'eligibility':'unresolved' if modern else 'needs_review'}
 
     async def verify(state):
         # No critique, confidence, impact, score, service gate result or shared chat.
@@ -415,6 +667,18 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
         statuses = {v['claim_id']:v['status'] for v in state['verification']['items']}
         affected = {criterion for c in critique.claims if c.affected_criterion_ids for criterion in c.affected_criterion_ids}
         results = [criterion_type.model_validate(c) for c in state['criteria']]
+        if modern:
+            reviewed = {item['criterion_id']:ApplicabilityItemV15.model_validate(item)
+                        for item in state['applicability_reviews']}
+            if affected:
+                packet = {**base, 'criteria_rules':[c.model_dump() for c in config.criteria if c.id in affected],
+                          'documents':documents, 'claims':state['handoff'],
+                          'legal_source_reviews':scope.legal_source_reviews}
+                reassessed = await call('applicability',packet,ApplicabilityBatchV15,'post-critic',
+                                        validator=lambda value:validate_applicability(value, affected))
+                reviewed.update({item.criterion_id:item for item in reassessed.items})
+            return {**conditional_result(results, reviewed, state),
+                    'reconciliation':{r.risk_id:reconcile(r,statuses) for r in critique.risks}}
         rechecked = {}
         if affected and config.schema_version == '1.1':
             packet = {**base, 'criteria_rules':[c.model_dump() for c in config.criteria if c.id in affected],
@@ -443,6 +707,9 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
         packet = {**base,'criteria':state['criteria'],'claims':state['handoff'],'verification':state['verification'],
                   'risks':state['critique']['risks'],'risk_assessments':state['reconciliation'],
                   'rubrics':[f.model_dump(mode='json') for f in config.factors],'documents':documents}
+        if modern:
+            packet['eligibility_conditions'] = state['eligibility_conditions']
+            packet['legal_reviews'] = state['legal_reviews']
         def validate_factors(result):
             validate_claims(result.claims)
             by_id = {c.claim_id:c for c in result.claims}
@@ -458,6 +725,16 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
                     raise ValueError('Quantity needs matching claim passport')
             if result.resources_claim_id not in by_id or not set(result.test_plan_claim_ids)<=by_id.keys():
                 raise ValueError('Resource/test plan passport missing')
+            if modern and state['eligibility_conditions']:
+                groups = [f.claim_ids for f in result.factors if f.factor_id in {'S03','S04','S05'} and f.value is not None]
+                groups.append(result.test_plan_claim_ids)
+                groups.extend([[identifier] for identifier in
+                               (result.days_claim_id, result.cost_claim_id, result.resources_claim_id) if identifier])
+                for identifiers in groups:
+                    assumptions = ' '.join(a for identifier in identifiers for a in by_id[identifier].assumptions)
+                    if not all(c[key] in assumptions for c in state['eligibility_conditions']
+                               for key in ('condition_id','assumption','required_check','impact_on_factors')):
+                        raise ValueError('Conditional time/cost/resource and test-plan passports must account for each condition_id with its literal assumption, check and effect')
         result = await call('factors',packet,Factors,validator=validate_factors)
         return {'factors':result.model_dump(mode='json')}
 
@@ -466,6 +743,17 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
         claims = Factors.model_validate(state['factors']).claims
         neutral_claims = [HandoffClaim.model_validate(c.model_dump(include=set(HandoffClaim.model_fields)))
                           for c in claims]
+        if modern:
+            # Preserve the existing handoff whitelist. Operational hypotheses are
+            # neutral claim context, not an author's eligibility or score verdict.
+            for original, projected in zip(claims, neutral_claims):
+                if original.kind == 'judgment' and original.assumptions:
+                    projected.neutral_text += '\nUnverified scenario premises: ' + ' '.join(original.assumptions)
+            gate = await call('neutrality', {'assessment_scope_id':scope.scope_id,
+                'neutral_model_description':scope.neutral_model_description,
+                'neutral_texts':[claim.neutral_text for claim in neutral_claims]}, Neutrality, 'factor-premises')
+            if gate.status != 'accept':
+                raise ValueError('Factor premises do not pass the independent neutrality gate')
         allowed = {ref.evidence_id for c in claims for ref in c.evidence_refs}
         packet = {**base, 'claims':[c.model_dump(mode='json') for c in neutral_claims],
                   'documents':[docs[i].model_dump(mode='json') for i in sorted(allowed)]}
@@ -487,7 +775,16 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
         output = dict(assessment_scope_id=scope.scope_id,eligibility=state['eligibility'],
                       publication='draft',score=None,publication_blockers=[],
                       validated_at=datetime.now(timezone.utc).isoformat())
-        if state['eligibility']=='pass' and 'factors' in state:
+        if modern:
+            stages = ['research', 'applicability']
+            stages += [stage for stage, field in [('critic','critique'), ('neutrality','neutral'),
+                       ('verifier','verification'), ('reconciliation','reconciliation'), ('factors','factors'),
+                       ('factor_validation','factor_verification')] if state.get(field)]
+            output.update(scoring_policy_version=config.scoring_policy_version,
+                          eligibility_conditions=state.get('eligibility_conditions', []),
+                          legal_reviews=state.get('legal_reviews', []), completed_stages=stages,
+                          analysis_status='complete' if state['eligibility']=='blocked' else 'needs_review')
+        if state['eligibility'] in ({'confirmed','conditional'} if modern else {'pass'}) and 'factors' in state:
             f = Factors.model_validate(state['factors'])
             statuses = {v['claim_id']:v['status'] for v in state.get('factor_verification',{}).get('items',[])}
             blockers = [f'factor_claim_unresolved:{c.claim_id}' for c in f.claims
@@ -497,11 +794,17 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
                 blockers.append('factor_evidence_incomplete')
             if not f.test_plan_claim_ids:
                 blockers.append('test_plan_missing')
+            if modern and state['eligibility']=='conditional' and (f.days is None or f.cost is None):
+                blockers.append('conditional_quantity_estimates_missing')
             result = score({v.factor_id:v.value for v in f.factors},{v.id:v.weight for v in config.factors},
                            days=f.days,cost=f.cost,budget=config.scenario.business_budget_usd,
-                           resources=f.resources,checks_complete=not blockers)
+                           resources=f.resources,checks_complete=not blockers,
+                           conditional=modern and state['eligibility']=='conditional')
             output.update(score=result.model_dump(mode='json'),publication_blockers=blockers,
-                          publication='ready' if not blockers and result.status=='final' else 'draft')
+                          publication='ready' if not blockers and result.status in {'final','conditional'} else 'draft')
+            if modern and output['publication']=='ready':
+                output['completed_stages'].append('card_validation')
+                output['analysis_status']='complete'
         await ledger.receipt(scope.scope_id,'card',key,h,output)
         return {'card':output}
 
@@ -509,11 +812,12 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
     for name, node in [('research',research),('applicability',applicability),('critic',critic),('neutrality',neutral),('verifier',verify),('reconcile',reconciliation),('factors',factors),('factor_validation',factor_validation),('card',card)]:
         builder.add_node(name,node)
     builder.add_edge(START,'research'); builder.add_edge('research','applicability')
-    builder.add_conditional_edges('applicability',lambda s:'critic' if s['eligibility']=='pass' else 'card')
+    admitted = {'confirmed','conditional'} if modern else {'pass'}
+    builder.add_conditional_edges('applicability',lambda s:'critic' if s['eligibility'] in admitted else 'card')
     builder.add_edge('critic','neutrality')
     builder.add_conditional_edges('neutrality',lambda s:'verifier' if s['neutral'] else 'card')
     builder.add_edge('verifier','reconcile')
-    builder.add_conditional_edges('reconcile',lambda s:'factors' if s['eligibility']=='pass' else 'card')
+    builder.add_conditional_edges('reconcile',lambda s:'factors' if s['eligibility'] in admitted else 'card')
     builder.add_edge('factors','factor_validation'); builder.add_edge('factor_validation','card'); builder.add_edge('card',END)
     saver = FencedPostgresSaver(ledger.pool,ledger.run_id,ledger.token,thread_id=thread)
     return builder.compile(checkpointer=saver), {'configurable':{'thread_id':thread}}
