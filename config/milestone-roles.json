@@ -24,7 +24,7 @@
     "max_output_tokens": 16384
   },
   "factors": {
-    "reasoning_effort": "high",
+    "reasoning_effort": "medium",
     "max_output_tokens": 16384
   },
   "factor_neutrality": {

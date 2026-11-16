@@ -581,3 +581,36 @@ that an unavailable score has been calculated.
 The integrated change passed 510 local tests with one expected macOS-only
 memory-limit skip. The production preflight, deployment and five-card execution
 remain separate operational steps; passing tests is not a published result.
+
+PR #11 merged as `5706b8e9d446eee05315afb6eba9b651f762cb71`.
+[Release 43820481710](https://github.com/bcmle/test_ai_builder/actions/runs/43820481710)
+completed successfully at 07:04 UTC on 2026-11-16 and stored encrypted backup
+artifact `14205220386`. The installed OCI revision and the concise Docusign page
+were checked on production. The original long analysis remains closed initially.
+
+The read-only production preflight verified all five upstream manifests and
+budget families. Docusign, Zuora, Veza and Application Observability had completed
+reconciliation with conditional eligibility; Travel Comparison Referrals stopped
+after applicability with F04 unknown in addition to F01/F03. Revision
+`2415b063231d46f0b6920b9a47808004` freezes exactly those five models. An initial
+start stopped before any child/provider call because the collection entry point
+also requires the saved Tavily credential. The same revision was then resumed
+with the existing provider configuration in `ai-builder-factor-v153`; no source
+research is repeated. It published its first running update with the other four
+selected models queued and the remaining fifteen retained.
+
+The first v1.5.3 pass confirmed the distinct milestones but Docusign still
+returned null planning estimates, requiring observed conversions, quotes and
+verified team capacity for the hypothetical launch. Docusign and Zuora's saved
+factor-neutrality receipts also revealed a concrete false rejection: the gate
+audited the scope boilerplate about not transferring the comparable's wider
+liabilities, while explicitly accepting both mapped condition claims.
+
+The narrow follow-up excludes that scope boilerplate only from the new factor
+gate, retaining all actual premises and condition coverage. P05 now explicitly
+uses accepted A-02 full-time developer/sales capacity and attempts a coarse
+bottom-up conditional planning estimate, with a failure branch and no invented
+evidence. Only the new Factors setting changes to medium; all upstream settings
+and prior frozen packets stay unchanged. A real-PostgreSQL focused suite passed
+35 tests, including the exact offending scope wording and unchanged legacy
+Critic input. The current queue is being quiesced before the corrected revision.

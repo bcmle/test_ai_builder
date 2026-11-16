@@ -140,6 +140,23 @@ def test_unknown_milestone_is_not_filled_from_horizon_or_other_estimate():
     assert not any(c['claim_id']=='factor-time-to-first-payment' for c in state['factors']['claims'])
 
 
+def test_factor_neutrality_excludes_scope_instructions_without_changing_claim_premises():
+    scope=conditional_packet()
+    boilerplate="Do not automatically transfer the comparable company's liabilities or wider operations to this proposal."
+    scope=scope.model_copy(update={'neutral_model_description':scope.neutral_model_description+' '+boilerplate})
+    roles=MilestoneRoles();state=run_milestone_case(roles,scope=scope)
+    packet=next(request for role,request,_ in roles.calls if role=='factor_neutrality')
+    assert 'neutral_model_description' not in packet and boilerplate not in str(packet)
+    assert packet['neutral_texts']==[claim['neutral_text'] for claim in state['factor_handoff']]
+    assert packet['reference_conditions']==state['eligibility_conditions']
+    by_id={claim['claim_id']:claim['neutral_text'] for claim in state['factor_handoff']}
+    assert packet['condition_claims']==[dict(condition_id=ref['condition_id'],claim_id=ref['claim_id'],
+        neutral_text=by_id[ref['claim_id']]) for ref in state['factors']['condition_claims']]
+    critic_gate=next(request for role,request,_ in roles.calls if role=='neutrality')
+    assert critic_gate['neutral_model_description']==scope.neutral_model_description
+    assert state['card']['score']['status']=='conditional'
+
+
 def test_semantic_condition_rejection_stops_without_a_lexical_repair_chain():
     roles=MilestoneRoles('semantic_rejection');state=run_milestone_case(roles)
     assert state['card']['score']['status']=='unavailable'
