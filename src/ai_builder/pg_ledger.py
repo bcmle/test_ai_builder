@@ -233,6 +233,23 @@ class PostgresLedger:
             if result.rowcount != 1:
                 raise Conflict('Operation not active')
 
+    async def input_count_audit(self, key, status, metadata, *, response=None):
+        """Record a count request separately from generation usage and money.
+
+        A successful count and its audit commit together before generation may
+        begin. Failed/interrupted counts remain running for explicit review.
+        """
+        if status not in {'started', 'completed', 'failed'} or (response is not None) != (status == 'completed'):
+            raise ValueError('Invalid input count audit transition')
+        async with self.locked(self.run_id, fenced=True) as (conn,_,__):
+            if response is not None:
+                updated = await conn.execute("""UPDATE app.provider_operations SET state='completed',response=%s
+                    WHERE run_id=%s AND operation_key=%s AND state='running'""", (Jsonb(response),self.run_id,key))
+                if updated.rowcount != 1:
+                    raise Conflict('Input count operation not active')
+            await self.event(conn,self.run_id,'input_token_count_'+status,
+                             {**metadata,'operation_key':key,'cost':None,'billing':'not_reported'})
+
     async def receipt(self, scope, node, key, input_hash, result=None):
         async with self.locked(self.run_id, fenced=True) as (conn,_,__):
             row = await (await conn.execute('SELECT * FROM app.node_receipts WHERE run_id=%s AND invocation_key=%s',(self.run_id,key))).fetchone()

@@ -129,6 +129,19 @@ without rereading the local manifest or creating additional runs.
 python -m ai_builder.focused_research --parent-collection COLLECTION_ID --model-id MODEL_ID --supplement-sources
 ```
 
+Oversized byte estimates use a separate durable OpenAI input-token preflight.
+The count request includes the exact model, instructions, input, reasoning and
+strict output schema with truncation disabled. A successful count is cached
+against the immutable generation payload; only `input_tokens + 4096` within the
+saved limit permits generation. Reservation uses the full saved input limit plus
+the configured maximum output, while final accounting uses actual returned usage.
+Count requests have a separate audit with `cost=null` / `billing=not_reported`;
+they do not generate a model answer or claim a confirmed zero-dollar charge.
+Each count operation has one physical attempt; failures stop before generation.
+This transport correction preserves prompts, source packets, paid receipts and
+graph checkpoints, so a paused focused run can continue with `--retry-paused`.
+See [OpenAI token counting](https://developers.openai.com/api/docs/guides/token-counting).
+
 Role outputs undergo schema and semantic validation before acceptance. An invalid
 output receives at most two metered corrections; every saved raw response and
 correction is replayable. Refusals, authentication/quota errors and unknown billing

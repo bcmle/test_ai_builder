@@ -48,6 +48,19 @@ def test_model_has_isolated_input_no_conversation_reuse(ledger):
     assert store.summary(run)["calculated_micro"] == 4000
 
 
+def test_oversized_sqlite_request_stays_closed_without_durable_preflight(ledger):
+    store, _, run, _ = ledger
+    def forbidden(request):
+        raise AssertionError('Legacy SQLite must not issue an untracked count or generation')
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(forbidden)) as client:
+            adapter = OpenAIAdapter(MeteredHTTP(store,run,'critic',pricing(),client=client),'fixture')
+            with pytest.raises(ProviderFailure,match='input_exceeds_pricing_scope'):
+                await adapter.generate('English',{'document':'x'*300000},Output)
+    asyncio.run(scenario())
+    assert not store.summary(run)['requests']
+
+
 def test_timeout_reserve_is_held_and_retry_has_new_request_id(ledger):
     store, _, run, _ = ledger
     calls = []

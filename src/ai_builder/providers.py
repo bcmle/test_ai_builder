@@ -82,6 +82,75 @@ class MeteredHTTP:
             await self.store.finish_operation(self.operation_key, result)
         return result
 
+    async def count_input_tokens(self, key, generation_payload):
+        """One durable, audited preflight; never a fabricated zero-cost usage row."""
+        if self.pricing.provider != 'openai':
+            raise ValueError('Input counting requires OpenAI')
+        if not all(hasattr(self.store, method) for method in ('begin_operation', 'input_count_audit')):
+            # The retired SQLite execution path cannot promise durable count replay.
+            raise ProviderFailure('input_exceeds_pricing_scope')
+        if not self.operation_key:
+            raise ValueError('Durable operation key required for input counting')
+        policy = 'input-token-count-1'
+        projection = {name:generation_payload[name] for name in ('model','instructions','input','reasoning','text')}
+        projection['truncation'] = 'disabled'
+        generation_hash, projection_hash = digest(generation_payload), digest(projection)
+        operation_hash = digest({'policy':policy,'generation_payload_hash':generation_hash,
+                                 'count_projection_hash':projection_hash})
+        operation_key = 'input-token-count:'+self.operation_key+':'+operation_hash
+        cached = await self.store.begin_operation(operation_key,operation_hash)
+
+        def validate(value):
+            if (not isinstance(value,dict) or value.get('object') != 'response.input_tokens'
+                    or type(value.get('input_tokens')) is not int or value['input_tokens'] < 0):
+                raise ProviderFailure('input_token_count_invalid_response')
+            return value['input_tokens']
+
+        if cached is not None:
+            return validate(cached)
+        metadata = {'policy_version':policy,'generation_operation_key':self.operation_key,
+                    'generation_payload_hash':generation_hash,'count_projection_hash':projection_hash,
+                    'agent':self.agent,'purpose':self.purpose,'model':self.pricing.model,
+                    'endpoint':'responses/input_tokens','attempt':1}
+        await self.store.input_count_audit(operation_key,'started',metadata)
+        started = time.monotonic()
+        client = self.client or httpx.AsyncClient(follow_redirects=False,trust_env=False)
+        response_id = None
+        try:
+            if not key:
+                raise ProviderFailure('missing_credentials')
+            timeout = min(120,self.deadline-time.monotonic()) if self.deadline else 120
+            if timeout <= 0:
+                raise ProviderFailure('deadline_exhausted')
+            try:
+                response = await client.post('https://api.openai.com/v1/responses/input_tokens',
+                    headers={'Authorization':'Bearer '+key},json=projection,timeout=timeout)
+            except httpx.TransportError:
+                raise ProviderFailure('input_token_count_transport_unknown') from None
+            response_id = response.headers.get('x-request-id')
+            if response.status_code >= 300:
+                raise ProviderFailure('input_token_count_http_'+str(response.status_code))
+            try:
+                data = response.json()
+            except ValueError:
+                raise ProviderFailure('input_token_count_invalid_response') from None
+            tokens = validate(data)
+            receipt = {'object':'response.input_tokens','input_tokens':tokens}
+            await self.store.input_count_audit(operation_key,'completed',
+                {**metadata,'input_tokens':tokens,'duration_ms':int((time.monotonic()-started)*1000),
+                 'provider_request_id':response_id},response=receipt)
+            return tokens
+        except BaseException as error:
+            code = error.code if isinstance(error,ProviderFailure) else 'input_token_count_interrupted'
+            await self.store.input_count_audit(operation_key,'failed',
+                {**metadata,'error_kind':code,'duration_ms':int((time.monotonic()-started)*1000),
+                 'provider_request_id':response_id})
+            await self.accounting('pause_run',self.run_id,code)
+            raise
+        finally:
+            if self.client is None:
+                await client.aclose()
+
     async def _post(self, endpoint, key, payload, upper, usage_parser):
         provider = self.pricing.provider
         base = {"openai": "https://api.openai.com/v1/", "tavily": "https://api.tavily.com/"}[provider]
@@ -203,11 +272,17 @@ class OpenAIAdapter:
             # mode without breakpoints avoids unaccounted automatic cache writes.
             payload['prompt_cache_options'] = {'mode': 'explicit'}
             payload['service_tier'] = 'default'
-        # UTF-8 byte bound plus a conservative framing allowance; reject long-context tariff crossover.
+        # Keep the legacy fast path and generation payload unchanged. Only the
+        # oversized byte estimate uses a separately persisted exact preflight.
         input_upper = len(json.dumps(payload, ensure_ascii=False).encode()) + 4096
         tariff = self.transport.pricing
         if input_upper > tariff.input_context_limit:
-            raise ProviderFailure("input_exceeds_pricing_scope")
+            counted = await self.transport.count_input_tokens(self.key,payload)
+            if counted + 4096 > tariff.input_context_limit:
+                raise ProviderFailure('input_exceeds_pricing_scope')
+            # The full frozen input limit remains reserved; count only grants
+            # admission and does not under-reserve a later generation request.
+            input_upper = tariff.input_context_limit
         upper = tariff.token_cost(TokenUsage(input_tokens=input_upper, output_tokens=max_output_tokens,
                                             cached_input_tokens=0, reasoning_tokens=0))
         def usage(data):
