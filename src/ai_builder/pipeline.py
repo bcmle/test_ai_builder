@@ -4,6 +4,7 @@ Discovery/fetch supplies the immutable ScopePacket. No arbitrary GraphState is
 sent to a model. Production publication and owner review are separate boundaries.
 """
 from datetime import datetime, timezone
+from decimal import Decimal, Inexact, localcontext
 import re
 from typing import Literal, TypedDict
 
@@ -272,6 +273,76 @@ def materialize_milestones(result: FactorsV153, market: str) -> FactorsStateV153
                     payment_cycle=timing(result.payment_cycle_days,result.payment_cycle_claim_id,'offer_ready','first_payment_received'),
                     total=timing(total,total_id,'assessment_start','first_payment_received')))
     return FactorsStateV153.model_validate(value)
+
+
+def validate_factor_verification(result: Verification, factors: Factors | FactorsStateV153,
+                                 *, market: str, milestones: bool = False,
+                                 business_budget_usd: Decimal | None = None) -> None:
+    """External evidence supports facts; the reserved arithmetic uses its checked inputs."""
+    claims = factors.claims
+    allowed = {ref.evidence_id for claim in claims for ref in claim.evidence_refs}
+    if len(result.items) != len(claims) or {item.claim_id for item in result.items} != {claim.claim_id for claim in claims}:
+        raise ValueError('Verification must cover every factor claim exactly once')
+    arithmetic_ids = set()
+    if milestones and isinstance(factors, FactorsStateV153) and factors.days is not None:
+        by_id = {claim.claim_id:claim for claim in claims}
+        if (len(by_id)!=len(claims) or not factors.preparation_claim_id or not factors.payment_cycle_claim_id
+                or factors.preparation_claim_id==factors.payment_cycle_claim_id):
+            raise ValueError('Generated milestone arithmetic requires distinct input passports')
+        for identifier,quantity,start,end in (
+                (factors.preparation_claim_id,factors.preparation_days,'assessment_start','offer_ready'),
+                (factors.payment_cycle_claim_id,factors.payment_cycle_days,'offer_ready','first_payment_received')):
+            source = by_id.get(identifier)
+            if (source is None or quantity is None or source.quantity_estimate!=quantity
+                    or (source.start_event,source.end_event)!=(start,end)):
+                raise ValueError('Generated milestone arithmetic input passport differs from its stage estimate')
+        raw = factors.model_dump(mode='json', exclude={'days','days_claim_id','timing'})
+        raw['claims'] = [claim for claim in raw['claims'] if claim['claim_id'] != 'factor-time-to-first-payment']
+        expected = materialize_milestones(FactorsV153.model_validate(raw), market)
+        if expected.model_dump(mode='json') != factors.model_dump(mode='json'):
+            raise ValueError('Generated milestone arithmetic differs from its exact source estimates')
+        statuses = {item.claim_id:item.status for item in result.items}
+        total = by_id['factor-time-to-first-payment']
+        if all(statuses.get(identifier) in ({'supported','not_fact_checkable'}
+               if by_id[identifier].kind=='judgment' else {'supported'}) for identifier in total.input_claim_ids):
+            arithmetic_ids.add(total.claim_id)
+    if milestones and isinstance(factors,FactorsStateV153) and business_budget_usd is not None:
+        by_id={claim.claim_id:claim for claim in claims}
+        statuses={item.claim_id:item.status for item in result.items}
+        share=by_id.get('factor-budget-share')
+        cost=by_id.get('factor-cost')
+        scenario=by_id.get('factor-scenario')
+        if share is not None and statuses.get(share.claim_id)=='supported' and not next(item for item in result.items if item.claim_id==share.claim_id).evidence_ids:
+            number=r'([0-9]+(?:\.[0-9]+)?)'
+            formula=re.fullmatch(r'100×\['+number+','+number+r'\]/'+number+r'=\['+number+','+number+r'\]\.?',
+                                 ''.join((share.formula or '').split()))
+            if (share.kind!='calculation' or share.method!='calculation'
+                    or share.metric not in {'percent','budget_share_percent','Non-salary budget share, percent'}
+                    or share.input_claim_ids!=['factor-cost','factor-scenario']
+                    or factors.cost_claim_id!='factor-cost' or factors.cost is None
+                    or cost is None or cost.quantity_estimate!=factors.cost
+                    or cost.metric not in {'USD','cost_usd','Cost in USD','Non-salary cost in USD'} or scenario is None
+                    or share.quantity_estimate is None or not business_budget_usd.is_finite() or business_budget_usd<=0
+                    or formula is None):
+                raise ValueError('Budget-share arithmetic lacks its exact USD cost, percent passport or frozen budget')
+            low,high,denominator,result_low,result_high=map(Decimal,formula.groups())
+            try:
+                with localcontext() as arithmetic:
+                    arithmetic.traps[Inexact]=True
+                    expected=Interval(low=100*factors.cost.low/business_budget_usd,high=100*factors.cost.high/business_budget_usd)
+            except Inexact:
+                raise ValueError('Budget-share arithmetic must be exact without rounding') from None
+            if (Interval(low=low,high=high)!=factors.cost or denominator!=business_budget_usd
+                    or Interval(low=result_low,high=result_high)!=expected or share.quantity_estimate!=expected
+                    or any(statuses.get(source.claim_id) not in ({'supported','not_fact_checkable'}
+                           if source.kind=='judgment' else {'supported'}) for source in (cost,scenario))):
+                raise ValueError('Budget-share arithmetic differs from its independently reviewed inputs')
+            arithmetic_ids.add(share.claim_id)
+    for item in result.items:
+        arithmetic_support = item.claim_id in arithmetic_ids and item.status == 'supported'
+        if (not set(item.evidence_ids) <= allowed or
+                (item.status in {'supported','refuted','mixed'} and not item.evidence_ids and not arithmetic_support)):
+            raise ValueError('Factor verification evidence outside scope or missing')
 
 
 UPSTREAM_ORDER = ('research','applicability','critic','neutrality','verifier','reconcile')
@@ -1113,13 +1184,9 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
         allowed = {ref.evidence_id for c in claims for ref in c.evidence_refs}
         packet = {**base, 'claims':[c.model_dump(mode='json') for c in neutral_claims],
                   'documents':[docs[i].model_dump(mode='json') for i in sorted(allowed)]}
-        def validate_factor_verification(result):
-            if len(result.items) != len(claims) or {v.claim_id for v in result.items} != {c.claim_id for c in claims}:
-                raise ValueError('Verification must cover every factor claim exactly once')
-            for item in result.items:
-                if not set(item.evidence_ids) <= allowed or (item.status in {'supported','refuted','mixed'} and not item.evidence_ids):
-                    raise ValueError('Factor verification evidence outside scope or missing')
-        result = await call('verifier',packet,Verification,'factor-premises',validator=validate_factor_verification)
+        result = await call('verifier',packet,Verification,'factor-premises',
+            validator=lambda result:validate_factor_verification(result,factor_result,market=config.market,milestones=milestones,
+                business_budget_usd=config.scenario.business_budget_usd))
         output = {'factor_verification':result.model_dump(mode='json')}
         if modern:
             output.update(factor_neutral=True, factor_handoff=[claim.model_dump(mode='json') for claim in neutral_claims])
