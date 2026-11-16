@@ -16,6 +16,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from .complete_selected_scores import (_load_plan,_verify_members,_current_bytes,_untouched,
     _known_publications,_publish_result,RECOVERY_KAYAK_ID)
+from .collection import _safe_failure
 from .config import Configuration
 from .domain import MilestoneHandoffClaim
 from .evidence import ArtifactStore
@@ -226,7 +227,7 @@ def main():
         async with execution_pool(os.environ['DATABASE_URL']) as pool:
             return await replay(pool,ArtifactStore(directory/'evidence'),directory,args.allowance,preflight_only=args.preflight_only)
     try: print(json.dumps(asyncio.run(run())),flush=True)
-    except Exception as error: cli.exit(1,'Cached-only replay stopped: '+type(error).__name__+': '+str(error)+'\n')
+    except Exception as error: cli.exit(1,'Cached-only replay stopped: '+_safe_failure(error)+'\n')
 
 
 if __name__=='__main__': main()
