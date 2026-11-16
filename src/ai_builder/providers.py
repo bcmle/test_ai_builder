@@ -158,6 +158,8 @@ class MeteredHTTP:
             raise ValueError("Endpoint not allowed")
         if not key:
             raise ProviderFailure("missing_credentials")
+        recovery_mode = (hasattr(self.store,'exact_input_reservation')
+                         and await self.accounting('exact_input_reservation'))
         logical = uid()
         for attempt in range(3):
             response_limit = 600 if provider == 'openai' else 120
@@ -181,7 +183,7 @@ class MeteredHTTP:
                 failure = ProviderFailure("connection_failed", True)
             except httpx.TransportError:
                 await self.accounting('mark_unknown', request_id, "transport_error")
-                failure = ProviderFailure("transport_unknown", True)
+                failure = ProviderFailure("transport_unknown", not recovery_mode)
             except BaseException:
                 await self.accounting('mark_unknown', request_id, "interrupted")
                 raise
@@ -197,7 +199,7 @@ class MeteredHTTP:
                     except (ValueError, AttributeError):
                         pass
                     exhausted = error_code in {"insufficient_quota", "credit_balance_exhausted", "quota_exceeded"}
-                    retry = (response.status_code == 429 and not exhausted) or response.status_code >= 500
+                    retry = not recovery_mode and ((response.status_code == 429 and not exhausted) or response.status_code >= 500)
                     failure = ProviderFailure("quota_exhausted" if exhausted else f"http_{response.status_code}", retry)
                     if exhausted or response.status_code in (401, 403):
                         await self.accounting('pause_run', self.run_id, failure.code)
@@ -276,13 +278,16 @@ class OpenAIAdapter:
         # oversized byte estimate uses a separately persisted exact preflight.
         input_upper = len(json.dumps(payload, ensure_ascii=False).encode()) + 4096
         tariff = self.transport.pricing
-        if input_upper > tariff.input_context_limit:
+        exact_reservation = (hasattr(self.transport.store,'exact_input_reservation')
+                             and await self.transport.accounting('exact_input_reservation'))
+        if exact_reservation or input_upper > tariff.input_context_limit:
             counted = await self.transport.count_input_tokens(self.key,payload)
             if counted + 4096 > tariff.input_context_limit:
                 raise ProviderFailure('input_exceeds_pricing_scope')
-            # The full frozen input limit remains reserved; count only grants
-            # admission and does not under-reserve a later generation request.
-            input_upper = tariff.input_context_limit
+            # Existing runs retain their original full-context reservation.
+            # Authorized recovery runs reserve the persisted exact count plus
+            # the same 4096-token margin, and always the full output allowance.
+            input_upper = counted + 4096 if exact_reservation else tariff.input_context_limit
         upper = tariff.token_cost(TokenUsage(input_tokens=input_upper, output_tokens=max_output_tokens,
                                             cached_input_tokens=0, reasoning_tokens=0))
         def usage(data):

@@ -84,8 +84,9 @@ class PostgresLedger:
             JOIN app.collections c ON c.id=i.collection_id
             WHERE c.study_id=%s AND i.model_id=%s AND i.run_id IS NOT NULL
             UNION SELECT r.id FROM app.runs r JOIN app.research_contexts x ON x.run_id=r.id
-            WHERE r.study_id=%s AND x.context->'plan'->'seed'->>'base_model_id'=%s''',
-            (study_id,model_id,study_id,model_id))).fetchall()
+            WHERE r.study_id=%s AND x.context->'plan'->'seed'->>'base_model_id'=%s
+            UNION SELECT run_id FROM app.recovery_runs WHERE study_id=%s AND model_id=%s''',
+            (study_id,model_id,study_id,model_id,study_id,model_id))).fetchall()
         return {row['run_id'] for row in rows}
 
     @staticmethod
@@ -96,7 +97,9 @@ class PostgresLedger:
             JOIN app.collections c ON c.id=i.collection_id
             LEFT JOIN app.research_contexts x ON x.run_id=r.id
             WHERE r.id=%s AND i.model_id=%s AND c.study_id=%s''', (run_id,model_id,study_id))).fetchone()
-        if not row or row['study_id'] != study_id or not row['research_context']:
+        if not row:
+            return await PostgresLedger._recovery_run_proof(conn,study_id,model_id,run_id)
+        if row['study_id'] != study_id or not row['research_context']:
             raise Conflict('Model budget ancestry requires an unambiguous saved collection run')
         if (digest(row['context']) != row['context_hash']
                 or digest(row['research_context']) != row['research_hash']):
@@ -122,6 +125,148 @@ class PostgresLedger:
             if not parent or parent['study_id'] != study_id or parent['run_id'] != parent_run:
                 raise Conflict('Model budget ancestor does not match the declared parent collection')
         return {'run_id':run_id,'parent_run_id':parent_run,'run_limit_micro':row['limit_micro']}
+
+    @staticmethod
+    async def create_recovery_allowance(conn, *, allowance_id, collection_id, model_ids,
+                                        authorization, limit='10', extend_model_id=None):
+        """Freeze one explicit owner decision and its old-cost baseline; caller owns transaction."""
+        if conn.info.transaction_status != TransactionStatus.INTRANS:
+            raise Conflict('Recovery allowance requires an explicit transaction')
+        models=list(model_ids)
+        cap=micro(limit)
+        if (not allowance_id or len(models)!=2 or len(set(models))!=2 or not 0<cap<=micro('10')
+                or not authorization or (extend_model_id is not None and extend_model_id not in models)):
+            raise ValueError('Recovery requires exactly two models, owner authorization and at most $10 total')
+        json.dumps(authorization,allow_nan=False)
+        collection=await (await conn.execute('SELECT * FROM app.collections WHERE id=%s',(collection_id,))).fetchone()
+        if not collection or digest(collection['context'])!=collection['context_hash']:
+            raise Conflict('Recovery collection is unavailable or changed')
+        study=await (await conn.execute('SELECT * FROM app.studies WHERE id=%s FOR UPDATE',(collection['study_id'],))).fetchone()
+        existing=await (await conn.execute('SELECT * FROM app.recovery_allowances WHERE study_id=%s',(study['id'],))).fetchone()
+        if existing:
+            if any(existing[key]!=value for key,value in dict(id=allowance_id,collection_id=collection_id,
+                    model_ids=models,limit_micro=cap,authorization=authorization,extend_model_id=extend_model_id).items()):
+                raise Conflict('An existing shared recovery allowance cannot be reset or expanded')
+            return existing
+        if (collection['context'].get('execution_version')!='collection-3'
+                or not set(models)<=set(collection['context'].get('selected_model_ids',[]))):
+            raise Conflict('Recovery cannot expand the frozen selected models')
+        members=await (await conn.execute('SELECT model_id,position,candidate,run_id FROM app.collection_items WHERE collection_id=%s ORDER BY position',
+                                          (collection_id,))).fetchall()
+        if digest([{key:row[key] for key in ('model_id','position','candidate')} for row in members])!=collection['membership_hash']:
+            raise Conflict('Recovery collection membership changed')
+        parents={row['model_id']:row['run_id'] for row in members if row['model_id'] in models}
+        if len(parents)!=2 or not all(parents.values()):
+            raise Conflict('Both recovery models require their exact saved current parents')
+        active=await (await conn.execute('''SELECT 1 FROM app.runs r LEFT JOIN app.run_leases l ON l.run_id=r.id
+            WHERE r.study_id=%s AND (l.expires_at>clock_timestamp() OR r.active_started_at IS NOT NULL) LIMIT 1''',
+            (study['id'],))).fetchone()
+        if active: raise Conflict('Recovery authorization requires a quiescent study')
+        for model_id,parent_id in parents.items():
+            parent=await (await conn.execute('SELECT * FROM app.runs WHERE id=%s',(parent_id,))).fetchone()
+            if not parent or parent['study_id']!=study['id'] or await PostgresLedger._model_budget(conn,parent) is None:
+                raise Conflict('Recovery parent lacks an intact cumulative model budget')
+        baseline=await (await conn.execute('''SELECT u.request_id,u.run_id,u.state,u.upper_micro,u.calculated_micro,u.billed_micro
+            FROM app.usage u JOIN app.runs r ON r.id=u.run_id WHERE r.study_id=%s ORDER BY u.request_id''',(study['id'],))).fetchall()
+        accounted=sum(row['calculated_micro'] if row['state']=='settled' else row['upper_micro'] if row['state'] in {'reserved','unknown'} else 0 for row in baseline)
+        if accounted>=study['limit_micro']: raise BudgetExceeded('Original study has no remaining allowance')
+        value=dict(id=allowance_id,study_id=study['id'],collection_id=collection_id,limit_micro=cap,
+            model_ids=models,parent_runs=parents,extend_model_id=extend_model_id,baseline_usage=baseline,
+            baseline_accounted_micro=accounted,authorization=authorization,reservation_policy='exact-input-plus4096-1')
+        await conn.execute('''INSERT INTO app.recovery_allowances(id,study_id,collection_id,limit_micro,model_ids,parent_runs,
+            extend_model_id,baseline_usage,baseline_accounted_micro,"authorization",input_hash,reservation_policy)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)''',
+            (allowance_id,study['id'],collection_id,cap,Jsonb(models),Jsonb(parents),extend_model_id,Jsonb(baseline),accounted,
+             Jsonb(authorization),digest(value),value['reservation_policy']))
+        await PostgresLedger.event(conn,collection['coordinator_run_id'],'recovery_allowance_authorized',
+            dict(allowance_id=allowance_id,model_ids=models,limit_micro=cap,baseline_accounted_micro=accounted,
+                 extend_model_id=extend_model_id,authorization=authorization,input_hash=digest(value)))
+        return await (await conn.execute('SELECT * FROM app.recovery_allowances WHERE id=%s',(allowance_id,))).fetchone()
+
+    @staticmethod
+    async def bind_recovery_run(conn, *, allowance_id, run_id, model_id, parent_run_id):
+        if conn.info.transaction_status != TransactionStatus.INTRANS:
+            raise Conflict('Recovery binding requires an explicit transaction')
+        allowance=await (await conn.execute('SELECT * FROM app.recovery_allowances WHERE id=%s',(allowance_id,))).fetchone()
+        if not allowance: raise Conflict('Recovery allowance is missing')
+        await conn.execute('SELECT id FROM app.studies WHERE id=%s FOR UPDATE',(allowance['study_id'],))
+        if allowance['parent_runs'].get(model_id)!=parent_run_id:
+            raise Conflict('Recovery operational parent differs from its frozen current collection item')
+        row=await (await conn.execute('''SELECT r.*,x.context,x.context_hash FROM app.runs r
+            JOIN app.research_contexts x ON x.run_id=r.id WHERE r.id=%s''',(run_id,))).fetchone()
+        parent=await (await conn.execute('SELECT * FROM app.runs WHERE id=%s',(parent_run_id,))).fetchone()
+        if (not row or not parent or row['study_id']!=allowance['study_id'] or parent['study_id']!=row['study_id']
+                or row['context_hash']!=digest(row['context']) or row['config_hash']!=digest(row['config_json'])
+                or row['context'].get('plan',{}).get('seed',{}).get('base_model_id')!=model_id
+                or any(row['config_json'].get(key)!=parent['config_json'].get(key) for key in ('market','scenario','criteria','model'))):
+            raise Conflict('Recovery run must preserve its exact model, study, scenario and criteria')
+        if await (await conn.execute('SELECT 1 FROM app.collection_items WHERE run_id=%s',(run_id,))).fetchone():
+            raise Conflict('Recovery must use a new standalone run, never replace frozen collection membership')
+        saved=await (await conn.execute('SELECT * FROM app.recovery_runs WHERE allowance_id=%s AND model_id=%s',(allowance_id,model_id))).fetchone()
+        if saved:
+            if any(saved[key]!=value for key,value in dict(run_id=run_id,parent_run_id=parent_run_id,
+                    context_hash=row['context_hash'],config_hash=row['config_hash']).items()):
+                raise Conflict('Recovery model already has its immutable run')
+            return saved
+        if await (await conn.execute('SELECT 1 FROM app.usage WHERE run_id=%s UNION ALL SELECT 1 FROM app.provider_operations WHERE run_id=%s',
+                                      (run_id,run_id))).fetchone():
+            raise Conflict('Recovery allowance must bind before any external operation')
+        members=await (await conn.execute('SELECT run_id FROM app.model_budget_members WHERE study_id=%s AND model_id=%s',
+                                        (allowance['study_id'],model_id))).fetchall()
+        ids={member['run_id'] for member in members}
+        if parent_run_id not in ids or await PostgresLedger._known_model_runs(conn,allowance['study_id'],model_id)!=ids|{run_id}:
+            raise Conflict('Recovery cannot omit or reset model budget ancestry')
+        await conn.execute('''INSERT INTO app.recovery_runs(run_id,allowance_id,study_id,model_id,parent_run_id,context_hash,config_hash)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)''',(run_id,allowance_id,allowance['study_id'],model_id,parent_run_id,row['context_hash'],row['config_hash']))
+        await conn.execute('INSERT INTO app.model_budget_members(run_id,study_id,model_id,parent_run_id,run_limit_micro) VALUES (%s,%s,%s,%s,%s)',
+                           (run_id,allowance['study_id'],model_id,parent_run_id,row['limit_micro']))
+        await PostgresLedger.event(conn,run_id,'recovery_run_bound',dict(allowance_id=allowance_id,model_id=model_id,parent_run_id=parent_run_id))
+        return await (await conn.execute('SELECT * FROM app.recovery_runs WHERE run_id=%s',(run_id,))).fetchone()
+
+    @staticmethod
+    async def _recovery_run_proof(conn, study_id, model_id, run_id):
+        row=await (await conn.execute('''SELECT b.*,r.limit_micro,r.config_hash AS actual_config_hash,
+            x.context_hash AS actual_context_hash,x.context,a.parent_runs,a.collection_id
+            FROM app.recovery_runs b JOIN app.recovery_allowances a ON a.id=b.allowance_id
+            JOIN app.runs r ON r.id=b.run_id JOIN app.research_contexts x ON x.run_id=b.run_id
+            WHERE b.run_id=%s AND b.study_id=%s AND b.model_id=%s''',(run_id,study_id,model_id))).fetchone()
+        if (not row or row['parent_runs'].get(model_id)!=row['parent_run_id']
+                or row['actual_context_hash']!=row['context_hash'] or digest(row['context'])!=row['context_hash']
+                or row['actual_config_hash']!=row['config_hash']
+                or row['context'].get('plan',{}).get('seed',{}).get('base_model_id')!=model_id):
+            raise Conflict('Model budget ancestry requires an unambiguous saved collection or authorized recovery run')
+        current=await (await conn.execute('SELECT run_id FROM app.collection_items WHERE collection_id=%s AND model_id=%s',
+                                          (row['collection_id'],model_id))).fetchone()
+        if not current or current['run_id']!=row['parent_run_id']:
+            raise Conflict('Recovery current collection parent differs')
+        return dict(run_id=run_id,parent_run_id=row['parent_run_id'],run_limit_micro=row['limit_micro'])
+
+    @staticmethod
+    async def _recovery_budget(conn,run,used=None):
+        value=await (await conn.execute('''SELECT a.*,b.model_id FROM app.recovery_runs b
+            JOIN app.recovery_allowances a ON a.id=b.allowance_id WHERE b.run_id=%s''',(run['id'],))).fetchone()
+        if not value: return None
+        if value['study_id']!=run['study_id']: raise Conflict('Recovery allowance belongs to another study')
+        await PostgresLedger._recovery_run_proof(conn,run['study_id'],value['model_id'],run['id'])
+        ids=[row['run_id'] for row in await (await conn.execute('SELECT run_id FROM app.recovery_runs WHERE allowance_id=%s',(value['id'],))).fetchall()]
+        if used is None:
+            row=await (await conn.execute('''SELECT COALESCE(sum(CASE WHEN state='settled' THEN calculated_micro
+                WHEN state IN ('reserved','unknown') THEN upper_micro ELSE 0 END),0) AS used
+                FROM app.usage WHERE run_id=ANY(%s::text[])''',(ids,))).fetchone()
+            accounted=int(row['used'])
+        else: accounted=int(sum(used.get(identifier,0) for identifier in ids))
+        return dict(allowance_id=value['id'],limit_micro=value['limit_micro'],accounted_micro=accounted,
+            remaining_micro=value['limit_micro']-accounted,model_id=value['model_id'],
+            extend_model_id=value['extend_model_id'],reservation_policy=value['reservation_policy'],run_ids=ids)
+
+    async def recovery_allowance(self):
+        async with self.pool.connection() as conn:
+            run=await (await conn.execute('SELECT * FROM app.runs WHERE id=%s',(self.run_id,))).fetchone()
+            if not run: raise KeyError(self.run_id)
+            return await self._recovery_budget(conn,run)
+
+    async def exact_input_reservation(self):
+        return (await self.recovery_allowance()) is not None
 
     @staticmethod
     async def register_model_budget_family(conn, *, study_id, model_id, ancestor_run_ids, limit='25'):
@@ -237,6 +382,9 @@ class PostgresLedger:
             total = totals['used']
         else:
             total = sum(used.get(identifier,0) for identifier in ids)
+        recovery = await PostgresLedger._recovery_budget(conn,run,used)
+        if recovery is not None and recovery['extend_model_id']==member['model_id']:
+            limit += recovery['limit_micro']
         return {'model_id':member['model_id'],'limit_micro':limit,'accounted_micro':int(total),
                 'remaining_micro':int(limit-total),'run_ids':sorted(ids)}
 
@@ -276,6 +424,7 @@ class PostgresLedger:
                 FROM app.usage u JOIN app.runs r ON r.id=u.run_id WHERE r.study_id=%s GROUP BY u.run_id''', (study['id'],))
             used = {r['run_id']:r['used'] for r in await cur.fetchall()}
             family = await self._model_budget(conn,run,used)
+            recovery = await self._recovery_budget(conn,run,used)
             count = await (await conn.execute('SELECT count(*) AS n FROM app.usage WHERE run_id=%s AND provider=%s AND endpoint=%s',
                                               (run_id,provider,endpoint))).fetchone()
             request_count = count['n']
@@ -286,6 +435,7 @@ class PostgresLedger:
                 request_count += fetched['n']
             blocked = (sum(used.values())+amount > study['limit_micro'] or used.get(run_id,0)+amount > run['limit_micro']
                        or (family is not None and family['accounted_micro']+amount > family['limit_micro'])
+                       or (recovery is not None and recovery['accounted_micro']+amount > recovery['limit_micro'])
                        or request_count >= run['config_json']['limits'][policy[provider,endpoint]]
                        or await self.active_ms(conn, run) >= run['config_json']['limits']['active_seconds']*1000)
             if blocked:
@@ -297,7 +447,7 @@ class PostgresLedger:
                     (request_id,logical_request_id,run_id,provider,model,endpoint,agent,purpose,pricing_id,amount))
                 await self.event(conn,run_id,'budget_reserved',{'request_id':request_id,'upper_micro':amount})
         if blocked:
-            raise BudgetExceeded('Run/study/model-family budget or request cap exhausted')
+            raise BudgetExceeded('Run/study/model-family/recovery budget or request cap exhausted')
         return True
 
     @asynccontextmanager
@@ -361,6 +511,7 @@ class PostgresLedger:
             fetches = await (await conn.execute(
                 'SELECT count(*) AS n FROM app.source_fetch_attempts WHERE run_id=%s', (run_id,))).fetchone()
             family = await self._model_budget(conn,run,required=False)
+            recovery = await self._recovery_budget(conn,run)
         totals = dict(calculated_micro=0,reserved_micro=0,unknown_micro=0,billed_micro=0,billed_unknown_count=0)
         for row in rows:
             if row['state']=='settled':
@@ -378,6 +529,8 @@ class PostgresLedger:
                     **totals)
         if family is not None:
             result['model_budget_family'] = family
+        if recovery is not None:
+            result['recovery_allowance'] = recovery
         return result
 
     async def begin_operation(self, key, input_hash):
@@ -398,11 +551,13 @@ class PostgresLedger:
                 # Also fence unmetered input-count operations before their HTTP
                 # request; a new revision may never start with unknown ancestry.
                 family = await self._model_budget(conn,run)
+                recovery = await self._recovery_budget(conn,run)
                 if family is not None:
                     cost = await (await conn.execute('''SELECT COALESCE(sum(CASE WHEN u.state='settled' THEN u.calculated_micro
                         WHEN u.state IN ('reserved','unknown') THEN u.upper_micro ELSE 0 END),0) AS used
                         FROM app.usage u JOIN app.runs r ON r.id=u.run_id WHERE r.study_id=%s''', (study['id'],))).fetchone()
-                    budget_blocked = family['remaining_micro'] <= 0 or cost['used'] >= study['limit_micro']
+                    budget_blocked = (family['remaining_micro'] <= 0 or cost['used'] >= study['limit_micro']
+                                      or (recovery is not None and recovery['remaining_micro']<=0))
                 if budget_blocked:
                     await conn.execute("UPDATE app.runs SET status='paused',control_version=control_version+1 WHERE id=%s", (self.run_id,))
                     await self.event(conn,self.run_id,'budget_paused',{'operation_key':key,'stage':'before_external_operation'})
