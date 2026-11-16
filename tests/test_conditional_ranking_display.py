@@ -55,7 +55,7 @@ def test_five_completed_conditional_cards_render_despite_two_unsaved_places(conf
         html = client.get('/runs/reassessment-a').text
         assert '5 conditional assessments' in html
         assert ranking_rows(html, 'conditional-ranking') == [(f'model-{i}', i + 1) for i in range(5)]
-        assert ranking_rows(html, 'final-ranking') == []
+        assert 'id="final-ranking"' not in html
         assert client.get('/runs/reassessment-a?format=json').json() == before == saved
         assert [m['rank'] for m in before['models']] == [1, 2, 3, None, None]
     assert public_files(tmp_path) == files_before
@@ -95,7 +95,7 @@ def test_current_ranking_excludes_retained_provisional_unscored_and_ineligible(c
     with TestClient(create_app(data_dir=tmp_path, database_url='')) as client:
         html = client.get('/runs/factor-revision').text
         assert ranking_rows(html, 'conditional-ranking') == [('model-0', 1)]
-        assert ranking_rows(html, 'final-ranking') == []
+        assert 'id="final-ranking"' not in html
         assert client.get('/runs/factor-revision?format=json').json() == saved
     assert public_files(tmp_path) == files_before
 
