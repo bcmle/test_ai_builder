@@ -467,3 +467,70 @@ the actual verified wording from the author's original rationale. Local validati
 passed 422 tests with one expected macOS-only memory-limit skip; PostgreSQL
 regressions cover paid response reuse, interruption after the repair receipt,
 completed replay and unchanged legacy serialization.
+
+PR #9 merged as `e3dfccc123aeb4acca6793e35deca519e0ed8d14`.
+[Release 43800254162](https://github.com/bcmle/test_ai_builder/actions/runs/43800254162)
+passed 423 Linux tests and deployed image
+`sha256:551b54fcbfc547da254bcc0c1db817ceb2b3a5f9df533b66a420e336bf2576de`
+at 03:53 UTC. Exact-image smoke, restart, runtime permissions, restore and
+encrypted export checks passed; the encrypted off-server backup was uploaded.
+The server's installed OCI revision was independently checked against the merge
+commit before resumption.
+
+At approximately 03:57 UTC the same collection resumed with `--retry-failed` in
+`ai-builder-reassessment-v152-repair1`, using the deployed image and existing
+credential files. The original container/logs were retained. The worker log
+confirmed Electronic Signature Workflows at position one in the existing queue;
+provider credentials were then unset from the operator shell. No frozen queue,
+budget or research inputs were replaced.
+
+The live continuation exposed overly narrow presentation recognition in the
+validator: all three saved Docusign repair candidates were rejected before the
+neutrality recheck. The worker was again quiesced at a verified boundary at
+04:12:41 UTC. All 246 physical requests were settled, with $41.848350 calculated
+cumulative spending, no active leases and no open clocks. No new score had been
+published. The paid replies remain stored for revalidation.
+
+Read-only diagnostics of the last Docusign candidate found 48 covered source
+units and eleven canonical-text mismatches, with no missing coverage, extra
+assertions, or quantity/modality/negation mismatches. The mismatches were a
+First-action heading within a paragraph, an exact proposed-plan prefix after a
+comma, and a leading conjunction following an explicitly omitted author verdict.
+The original licensing prohibition and launch conditions remained present.
+Spec `7856158` clarifies these narrow presentation cases before code changes;
+frozen input packets, paid operation keys and existing correction diagnostics
+must remain unchanged.
+
+The narrow correction passed 440 local tests with one expected macOS-only skip.
+Its PostgreSQL regression replays three already paid repair responses with the
+same packet bodies, operation keys and correction diagnostics; genuine role
+changes remain rejected while the presentation-only candidate is accepted.
+Only the required neutrality recheck and verifier are then newly billed.
+
+The proposed correction was tested against production's saved responses in a
+temporary container with a read-only source overlay and a read-only database
+transaction, without provider credentials or calls. Docusign's last candidate
+passed with all 48 source units covered. The first reported presentation
+mismatch in Zuora's first two saved candidates was the proposed demand test's
+standalone `Success:` heading became `Proposed success criteria:`. Its later
+candidate instead removed `success` and must remain rejected. The unchanged
+threshold requires two actual pilot payments, accepted invoice outputs without
+unresolved material errors, and at least one paid renewal by day 90; interest
+and unpaid commitments do not count. Spec `4f87864` permits only the directional,
+source-bound heading clarification, preserving all criteria and stop conditions.
+
+The combined correction passed 454 local tests with one expected macOS-only
+skip. Independent review and PostgreSQL replay tests confirm that the earlier
+paid success-clarification response is reused without a new repair charge, while
+the saved later response that removed `success` still rejects. Frozen packets,
+source generation, operation keys and existing diagnostics remain unchanged.
+
+The final production overlay accepted all three saved Docusign candidates
+(input events 1435, 1441 and 1447). Zuora still rejects as a whole: fuller
+read-only diagnostics found additional changes beyond the first label mismatch,
+including removed content outside the frozen omittable spans and changes to
+modality in the byproduct assumption and F03 required check. The isolated replay
+test above proves cache reuse for an otherwise valid clarification; it does not
+establish acceptance of Zuora's actual complete replies. No broader equivalence
+rule or source-unit rewrite was introduced to force acceptance. The same queue
+can reuse those replies, retain Zuora's technical stop, and continue other cards.

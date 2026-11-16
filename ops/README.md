@@ -1,8 +1,12 @@
 # Reassessment recovery
 
 `quiesce-reassessment.sh` is a narrowly scoped operator helper for the running
-`ai-builder-reassessment-v152` Python container. It does not alter the deployment
-bundle, database, immutable research inputs or budgets.
+`ai-builder-reassessment-v152` Python container. The explicitly named recovery
+container can be selected with
+`QUIESCE_CONTAINER=ai-builder-reassessment-v152-repair1` or
+`QUIESCE_CONTAINER=ai-builder-reassessment-v152-repair2`; all other names are
+rejected. It does not alter the deployment bundle, database, immutable research
+inputs or budgets.
 
 Run as root on the Linux Docker host with the exact collection ID, PostgreSQL
 container, database and user. The optional wait limit is at most 600 seconds.
@@ -27,3 +31,12 @@ Validation before first use: shell syntax, read-only boundary SQL on isolated
 PostgreSQL, and STOP → queued INT → CONT on a local asyncio dummy. Linux
 pidfd/proc/Docker integration was not available on the development Mac; runtime
 checks fail closed when the required host features or identities differ.
+
+`diagnose-factor-projection.py` reads saved repair inputs and provider responses
+using the deployed application's `DATABASE_URL`. It establishes a read-only
+transaction and replays the installed validation without provider calls or
+database writes. Supply `--collection`, `--position` and optionally `--compact`
+for console output. Run it through the existing application image; a temporary
+compose container can be used after the research worker exits. Do not pass
+provider credentials. Output omits full documents and connection secrets and is
+bounded to 24,000 characters per candidate, or 3,600 in compact mode.

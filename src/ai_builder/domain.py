@@ -294,8 +294,9 @@ _PRESENTATION = re.compile(
     r'(^|(?<=[.;:\n]))\s*(?:the\s+)?proposed\s+(?:stop\s+rule|test|plan|scenario|procedure|team)'
     r'(?:\s+(?:is\s+to|assumes?|includes?|begins?|states?|describes?))?\s*'
     r'|(^|(?<=[.;:\n]))\s*(?:the\s+)?plan\s+is\s+to\s*'
+    r'|(?<=,)\s*The\s+proposed\s+plan\s+is\s+to\s*'
     r'|Unverified scenario premises:\s*'
-    r'|^\s*First action(?=\s+(?:on\s+day|:)|:)', re.I)
+    r'|(^|(?<=[.;:\n]))\s*First action(?=\s+(?:on\s+day|:)|:)', re.I)
 
 
 def _operational_tokens(text):
@@ -313,6 +314,17 @@ def _operational_tokens(text):
 
 def _content_tokens(text):
     return [token for token,_,__ in _operational_tokens(text)]
+
+
+def _proposed_success_label_variant(text):
+    """Forward clarification of a standalone heading inside this proposed test."""
+    heading = re.match(r'^\s*(?:the\s+)?proposed\s+(?:\d+[-– ]day\s+)?(?:demand\s+)?test'
+                       r'(?:,\s*not\s+a\s+forecast)?\s*[.:]', text, re.I)
+    if not heading:
+        return text
+    return re.sub(r'(^|(?<=[.\n]))(\s*)Success(?=\s*:)',
+                  lambda match:match.group(1)+match.group(2)+'Proposed success criteria'
+                  if match.start() >= heading.end() else match.group(), text, flags=re.I)
 
 
 def _negative_anchors(text):
@@ -381,6 +393,13 @@ def validate_factor_projection(projection: FactorNeutralProjection, originals: l
     source_map = {source['source_id']:source for source in sources}
     if len(projection.coverage) != len(sources) or {c.source_id for c in projection.coverage} != set(source_map):
         raise ValueError('Neutral projection must account for every text, assumption and condition component exactly once')
+    coverage_by_source = {item.source_id:item for item in projection.coverage}
+    predecessors, previous_by_origin = {}, {}
+    for source in sources:
+        previous = previous_by_origin.get(source['origin'])
+        if previous and previous['source_end'] == source['source_start']:
+            predecessors[source['source_id']] = previous
+        previous_by_origin[source['origin']] = source
     covered = {identifier:set() for identifier in original_ids}
     for item in projection.coverage:
         source = source_map[item.source_id]
@@ -397,10 +416,20 @@ def validate_factor_projection(projection: FactorNeutralProjection, originals: l
         target_terms = _protected_premises(item.retained_excerpt)
         required = set(source['protected_terms'])
         source_content = re.sub(r'^\s*because\s+', '', source['source_excerpt'], flags=re.I) if source['author_evaluation_connector'] else source['source_excerpt']
+        source_variants = [source_content]
+        previous = predecessors.get(item.source_id)
+        if previous and previous['omittable']:
+            previous_coverage = coverage_by_source[previous['source_id']]
+            if (previous_coverage.disposition == 'omitted_author_evaluation'
+                    and previous_coverage.target_claim_id is None and previous_coverage.retained_excerpt is None):
+                # Infer only from immutable adjacent spans and actual omission;
+                # keep frozen source-unit fields and repair packet hashes intact.
+                source_variants.append(re.sub(r'^\s*and\s+', '', source_content, flags=re.I))
+        source_variants += [_proposed_success_label_variant(content) for content in tuple(source_variants)]
         if (not required <= target_terms or required & _MODAL_TERMS != target_terms & _MODAL_TERMS
                 or _quantities(source['source_excerpt']) != _quantities(item.retained_excerpt)
                 or _negative_anchors(source['source_excerpt']) != _negative_anchors(item.retained_excerpt)
-                or _content_tokens(source_content) != _content_tokens(item.retained_excerpt)):
+                or not any(_content_tokens(content) == _content_tokens(item.retained_excerpt) for content in source_variants)):
             raise ValueError('Neutral repair changed an operational dependency, number, time, negation or modality')
         # Bind each map entry to one literal occurrence, preferring uncovered
         # occurrences. Repeating a proposition cannot hide behind one reference.
