@@ -4,6 +4,7 @@ No database/schema is created by web startup. The private deployment binds this
 service to server loopback; public product routes remain a separate milestone.
 """
 import asyncio
+from collections import Counter
 from contextlib import asynccontextmanager
 import hashlib
 import json
@@ -45,23 +46,24 @@ def _literal_excerpt(value, words, sentences=None):
 def _ceo_summary(model):
     """Presentation only; the published assessment and its hashes stay intact."""
     claims = {claim['id']: claim for claim in model['claims']}
+    risk_uses = Counter(cid for risk in model['risks'] for cid in set(risk['claim_ids']))
     risks = []
     for index, risk in enumerate(model['risks'][:3], 1):
-        judgment = next((claims[cid] for cid in risk['claim_ids']
-                         if cid in claims and claims[cid]['kind'] == 'judgment'), None)
-        risks.append(dict(text=_literal_excerpt(judgment['text'] if judgment else risk['text'], 16, 1),
+        judgments = [claims[cid] for cid in risk['claim_ids']
+                     if cid in claims and claims[cid]['kind'] == 'judgment']
+        judgment = min(judgments, key=lambda claim: risk_uses[claim['id']], default=None)
+        risks.append(dict(text=_literal_excerpt(judgment['text'] if judgment else risk['text'], 48, 1),
                           href=f"#claim-{judgment['id']}" if judgment else f'#risk-{index}'))
     next_step = None
-    for cid in model['test_plan_claim_ids']:
-        claim = claims.get(cid)
-        if not claim:
-            continue
+    plans = [claims[cid] for cid in model['test_plan_claim_ids'] if cid in claims]
+    action_patterns = (r'\bfirst action(?: on [^:.\n]+)?:\s*|\bfirst action (?:is|would be)(?: to)?\s+',
+                       r'\bexperiment begins by\s+')
+    selected_action = next(((claim, match.end()) for pattern in action_patterns for claim in plans
+                           if (match := re.search(pattern, claim['text'], re.IGNORECASE))), None)
+    if selected_action or plans:
+        claim, start = selected_action if selected_action else (plans[0], 0)
         text = claim['text']
-        action = re.search(r'\bFirst action(?: on [^:\n]+)?:\s*', text, re.IGNORECASE)
-        if action:
-            text = text[action.end():]
-        next_step = dict(text=_literal_excerpt(text, 18, 1), href=f'#claim-{cid}')
-        break
+        next_step = dict(text=_literal_excerpt(text[start:], 48, 1), href=f"#claim-{claim['id']}")
     factors = {factor['id']: factor for factor in model['factors']}
     factor_names = dict(FACTORS)
     if model.get('scoring_policy_version') == '1.5.3':

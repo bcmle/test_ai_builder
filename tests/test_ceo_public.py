@@ -8,7 +8,7 @@ import subprocess
 from fastapi.testclient import TestClient
 import pytest
 
-from ai_builder.api import create_app
+from ai_builder.api import _ceo_summary, create_app
 from ai_builder.public import load_snapshot, public_model, publish_snapshot
 from test_conditional_public import conditional_result
 from test_public import metadata, snapshot
@@ -96,6 +96,57 @@ def test_unscored_brief_keeps_unknowns_and_legal_conditions_visible(config, tmp_
         assert 'The vendor supplies subscription software.' not in brief
         assert 'The vendor supplies subscription software.' in html
         assert 'Reviewing documents' not in brief
+
+
+def test_risk_excerpt_prefers_specific_judgments_over_repeated_scenario(config):
+    model = public_model(conditional_result(), metadata(), config)
+    template = next(claim for claim in model['claims'] if claim['kind'] == 'judgment')
+    shared = {**template, 'id': 'shared-scenario', 'text': 'The assessment assumes a two-person team and no existing customers.'}
+    sentences = [
+        'First payment may miss day 90 because the team must find and convert a new buyer willing to prepay for a single-application permission review.',
+        'Connector development and recommendation validation may delay first payment beyond day 90.',
+        'Buyer authorization and vendor acceptance may prevent payment within 90 days even if the prototype works.',
+    ]
+    model['claims'].append(shared)
+    model['risks'] = []
+    for index, sentence in enumerate(sentences):
+        claim = {**template, 'id': f'specific-{index}', 'text': sentence + ' Full reasoning remains in the passport.'}
+        model['claims'].append(claim)
+        model['risks'].append(dict(id=f'risk-{index}', text=shared['text'] + claim['text'],
+                                  claim_ids=[shared['id'], claim['id']]))
+    before = deepcopy(model)
+    brief = _ceo_summary(model)
+    assert [risk['text'] for risk in brief['risks']] == [sentence + ' …' for sentence in sentences]
+    assert [risk['href'] for risk in brief['risks']] == [f'#claim-specific-{i}' for i in range(3)]
+    assert model == before
+
+
+def test_conditional_risk_excerpt_preserves_complete_condition_and_consequence(config):
+    model = public_model(conditional_result(), metadata(), config)
+    sentence = ('If the first buyer requires a working demonstration of its subscription rules and usage inputs '
+                'before prepaying, payment is conditional on completion of the necessary data mapping, processor '
+                'integration and invoice testing.')
+    claim = next(claim for claim in model['claims'] if claim['kind'] == 'judgment')
+    claim['text'] = sentence + ' Whether that work fits within the 90-day launch period is unknown.'
+    model['risks'] = [dict(id='risk', text=claim['text'], claim_ids=[claim['id']])]
+    assert _ceo_summary(model)['risks'][0]['text'] == sentence + ' …'
+
+
+@pytest.mark.parametrize('prefix,action', [
+    ('The first action is ', 'preparation of a one-page workflow specification, followed by requests for documented legal review and supplier confirmation.'),
+    ('At assessment start, the first action would be to ', 'prepare the proposed state, contract, data-flow and payment-flow description, request scoped review, and begin compiling prospective business contacts.'),
+    ("The conditional experiment's first action is ", 'a written scope sheet identifying candidate states, one application, intended data fields, access method and payment flow.'),
+    ('The conditional experiment begins by ', 'specifying candidate states, inventorying intended components and telemetry fields, documenting money flow, and seeking scoped review and onboarding requirements.'),
+    ('First action on day 1: ', 'prepare a scope sheet and request priced review.'),
+])
+def test_next_step_finds_action_across_all_plan_claims(config, prefix, action):
+    model = public_model(conditional_result(), metadata(), config)
+    template = next(claim for claim in model['claims'] if claim['kind'] == 'judgment')
+    template['text'] = 'This is a proposed conditional experiment within the supplied 90-day window, not a forecast.'
+    readiness = {**template, 'id': 'readiness', 'text': prefix + action + ' Full conditions remain applicable.'}
+    model['claims'].append(readiness)
+    model['test_plan_claim_ids'] = [template['id'], readiness['id']]
+    assert _ceo_summary(model)['next_step'] == dict(text=action + ' …', href='#claim-readiness')
 
 
 @pytest.mark.parametrize('policy', ['1.5.2', '1.5.3'])
