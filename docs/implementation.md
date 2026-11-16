@@ -534,3 +534,50 @@ test above proves cache reuse for an otherwise valid clarification; it does not
 establish acceptance of Zuora's actual complete replies. No broader equivalence
 rule or source-unit rewrite was introduced to force acceptance. The same queue
 can reuse those replies, retain Zuora's technical stop, and continue other cards.
+
+PR #10 merged as `4941720d7a6fea2ad31918c2c242295b9d5c198b`.
+[Release 43810379878](https://github.com/bcmle/test_ai_builder/actions/runs/43810379878)
+passed 455 Linux tests and all image, restart, permissions, restore and encrypted
+export checks. It deployed image
+`sha256:9a141c112d3453245cff41f00a806be5dc84f262575f04f9908f5ab3951deca8`
+at 05:33 UTC; encrypted off-server backup artifact `14200188976` was stored.
+The installed OCI revision was checked before the same collection resumed at
+approximately 05:35 UTC in `ai-builder-reassessment-v152-repair2`, with unchanged
+inputs and monetary limits. Provider keys were unset from the operator shell.
+
+Electronic Signature Workflows published its expanded conditional assessment at
+05:35:27 UTC, with sixteen sources, two launch conditions and thirteen legal
+document records. This is conditional eligibility, not a computed score. The
+new independent factor-neutrality check rejected remaining evaluative and
+instructional wording; S03–S05, time and cost estimates also remain unknown.
+Factor validation and final ranking therefore remain incomplete. The actual
+card was checked at 1280×720 and 390×844 without horizontal overflow. Zuora's
+cached rejection was preserved, and the queue continued to Identity Access
+Reviews and then Application Observability without rerunning old research.
+
+The queue was then stopped at a quiet checkpoint after the user limited the
+whole update to five cards. The production audit showed 267 settled operations,
+$52.608170 cumulative cost, no active leases and no unsettled usage. The sixth
+unfinished attempt remains audit history and is excluded from further work.
+
+Policy 1.5.3 implements the corrected S03/S04 milestones: preparation to a ready
+offer and then that offer to actual first payment. It derives rounded anchors
+and the total from separate, passported estimates. Completed upstream stages and
+frozen sources are referenced by a verified manifest; they are not researched
+again or copied into new provider receipts. Existing study costs and all prior
+model revisions count against the unchanged $100 study / $25 model limits.
+The new revision selects exactly the first five models in the authorized
+priority order, publishes each completed result, and preserves the other fifteen
+historical payloads. A read-only production preflight precedes creation.
+
+The model detail page now follows the original assignment's two-minute
+comparison requirement: a short business summary, score, milestones, budget,
+five factors, up to three risk excerpts and a proposed next step. Full legal
+reviews, claim passports, conditions and the test plan stay available in a
+closed-by-default detailed analysis. The summary uses existing source text and
+adds no generated claims or provider calls. This presentation does not imply
+that an unavailable score has been calculated.
+
+The integrated change passed 510 local tests with one expected macOS-only
+memory-limit skip. The production preflight, deployment and five-card execution
+remain separate operational steps; passing tests is not a published result.

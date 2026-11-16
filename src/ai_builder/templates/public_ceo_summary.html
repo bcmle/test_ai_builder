@@ -1,0 +1,32 @@
+{% set outlook_href = '#factors' if model.factors or model.days or model.test_budget or model.scoring_policy_version == '1.5.3' else '#criteria' %}
+<div class="ceo-brief" id="decision-brief">
+  <header class="ceo-heading"><span class="eyebrow">{{ model.category }} · {{ snapshot.market }}</span><h1>{{ model.title }}</h1><p class="lead"><a href="#model-description">{{ ceo.summary }}</a></p></header>
+  <div class="ceo-business">
+    <div><span class="eyebrow">Proposed buyer</span><p><a href="#model-description">{{ ceo.buyer or 'Unknown' }}</a></p></div>
+    <div><span class="eyebrow">Revenue hypothesis</span><p><a href="#model-description">{{ ceo.revenue or 'Unknown' }}</a></p></div>
+    <div><span class="eyebrow">Comparable</span><p><a href="#model-description">{{ ceo.comparable or 'Unknown' }}</a></p></div>
+  </div>
+  <div class="ceo-outlook">
+    <aside class="ceo-score">
+      {{ update_status(model, snapshot) }}
+      {% if retained_assessment %}<strong>Previous assessment</strong><p>No new score for this update.</p>
+      {% elif model.score %}<strong>{{ model.score.low|number }}–{{ model.score.high|number }}<small>/100</small></strong><p>{{ score_label(model) }} · {{ goal_labels[model.score.goal_feasibility] }}</p>
+      {% else %}<strong>No score yet</strong><p><a href="{{ '#criteria' if model.status in ['blocked', 'unresolved', 'fail', 'needs_review'] else outlook_href }}">{{ ceo.score_reason }}</a></p>{% endif %}
+      {% if model.eligibility_conditions %}<p class="ceo-conditions"><a href="#conditions">{{ model.eligibility_conditions|length }} open checks: {% for condition in model.eligibility_conditions[:3] %}{{ criterion_names[condition.criterion_id] }}{% if not loop.last %}; {% endif %}{% endfor %}{% if model.eligibility_conditions|length > 3 %}…{% endif %} ↗</a></p>{% endif %}
+    </aside>
+    <div class="ceo-estimates">
+      {% if model.scoring_policy_version == '1.5.3' %}
+        {% for key, label in [('preparation', 'Preparation'), ('payment_cycle', 'Offer → payment'), ('total', 'Total to first payment')] %}
+        {% set stage = model.timing[key] if model.timing else none %}<div><span>{{ label }}</span><strong><a href="{{ '#claim-' ~ stage.claim_id if stage and stage.claim_id else outlook_href }}">{% if stage and stage.days %}{{ interval(stage.days, ' days') }}{% else %}Unknown{% endif %}</a></strong></div>
+        {% endfor %}
+      {% else %}<div><span>First payment</span><strong><a href="{{ outlook_href }}">{% if model.days %}{{ interval(model.days, ' days') }}{% else %}Unknown{% endif %}</a></strong></div>{% endif %}
+      <div><span>Test budget</span><strong><a href="{{ outlook_href }}">{% if model.test_budget %}{{ model.test_budget.low|dollars }}–{{ model.test_budget.high|dollars }}{% else %}Unknown{% endif %}</a></strong></div>
+      <p class="small muted">Estimates, subject to open checks.</p>
+    </div>
+  </div>
+  <div class="ceo-decision-grid">
+    <section><h2>Five factors <small>/4</small></h2><div class="ceo-factors">{% for factor in ceo.factors %}<div><a href="{{ '#claim-' ~ factor.claim_ids[0] if factor.claim_ids else outlook_href }}">{{ factor.name }}</a><strong>{% if factor.value %}{{ interval(factor.value) }}{% else %}Unknown{% endif %}</strong></div>{% endfor %}</div></section>
+    <section><h2>Key risks <small>Judgments / excerpts</small></h2>{% if ceo.risks %}<ul class="ceo-risks">{% for risk in ceo.risks %}<li><a href="{{ risk.href }}">{{ risk.text }} ↗</a></li>{% endfor %}</ul>{% else %}<p class="small muted">Risk assessment not available.</p>{% endif %}</section>
+  </div>
+  {% if ceo.next_step %}<section class="ceo-next"><h2>Proposed next step</h2><p><a href="{{ ceo.next_step.href }}">{{ ceo.next_step.text }} ↗</a></p></section>{% endif %}
+</div>

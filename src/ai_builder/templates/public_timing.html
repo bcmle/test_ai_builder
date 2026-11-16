@@ -1,0 +1,10 @@
+<div class="launch-grid milestone-grid">
+{% for key, label, boundary in [('preparation', 'Preparation to a ready offer', 'Preparation starts → minimum test / offer ready'), ('payment_cycle', 'Ready offer to first payment', 'Offer ready → first payment received'), ('total', 'Total time to first payment', 'Preparation starts → first payment received')] %}
+{% set part = model.timing[key] if model.timing else none %}
+<article><span>{{ label }}</span><strong>{{ interval(part.days if part else none, ' days') }}</strong>
+<p class="small muted milestone-boundary">{{ boundary }}</p>
+{% if part and part.estimate and key != 'total' %}<p class="small muted">Source estimate: {{ interval(part.estimate, ' days') }}.</p>{% endif %}
+{% if part and part.claim_id %}<a class="understated-link small" href="#claim-{{ part.claim_id }}">{{ 'Inspect calculation' if key == 'total' else 'Inspect estimate and assumptions' }} ↗</a>{% endif %}
+</article>{% endfor %}
+</div>
+<p class="small muted">Stage estimates are rounded upward to whole days. The total adds the two sequential stages; it stays unknown when either stage is unknown. The {{ snapshot.scenario.days }}-day horizon is a target, not an estimate.</p>

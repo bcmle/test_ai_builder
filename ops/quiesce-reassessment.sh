@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# Stop only the v1.5.2 research Python process at a verified quiet boundary.
+# Stop only an explicitly recognized research Python process at a quiet boundary.
 # No database writes, credentials, budget changes, TERM, KILL, or Docker pause.
 set -Eeuo pipefail
 umask 077
 
 target_name=${QUIESCE_CONTAINER:-ai-builder-reassessment-v152}
+expected_parent=1d76fe99e56240989cd67794b7143dce
+expected_module=ai_builder.reassess_collection
+expected_schema=1.2
 case "$target_name" in
   ai-builder-reassessment-v152|ai-builder-reassessment-v152-repair1|ai-builder-reassessment-v152-repair2) ;;
+  ai-builder-factor-v153)
+    expected_parent=13057b6a4dbf418fb01b2ac5c93a3fc1
+    expected_module=ai_builder.factor_revision
+    expected_schema=1.3 ;;
   *) echo 'Refusing an unrecognized research container name.' >&2; exit 2 ;;
 esac
-expected_parent=1d76fe99e56240989cd67794b7143dce
 if (( $# < 4 || $# > 5 )); then
   echo 'Usage: quiesce-reassessment.sh COLLECTION_ID POSTGRES_CONTAINER DATABASE USER [MAX_SECONDS=600]' >&2
   exit 2
@@ -79,7 +85,7 @@ IFS='|' read -r target_id target_pid running paused restart inspected_name <<< "
   log 'Expected a running, unpaused research container with no restart policy.' >&2; exit 2;
 }
 mapfile -d '' -t task_argv < "/proc/$target_pid/cmdline"
-[[ ${task_argv[0]##*/} =~ ^python([0-9]+([.][0-9]+)?)?$ && ${task_argv[1]:-} == -m && ${task_argv[2]:-} == ai_builder.reassess_collection ]] || {
+[[ ${task_argv[0]##*/} =~ ^python([0-9]+([.][0-9]+)?)?$ && ${task_argv[1]:-} == -m && ${task_argv[2]:-} == "$expected_module" ]] || {
   log 'Container PID is not the expected direct Python research command.' >&2; exit 2;
 }
 # Bind either the resumed collection or the known original launch parameters.
@@ -116,14 +122,16 @@ read -r _ sig_caught < <(grep '^SigCgt:' "/proc/$target_pid/status")
 }
 
 provenance=$(timeout --signal=TERM --kill-after=1s 3s docker exec -i "$task_db_container" \
-  psql -X -qAt -v ON_ERROR_STOP=1 -v "target_collection=$collection_id" -v "expected_parent=$expected_parent" \
+  psql -X -qAt -v ON_ERROR_STOP=1 -v "target_collection=$collection_id" -v "expected_parent=$expected_parent" -v "expected_schema=$expected_schema" \
   -U "$task_db_user" -d "$task_db_name" <<'SQL'
 BEGIN READ ONLY;
 SET LOCAL statement_timeout = '1200ms';
 SELECT
  (SELECT count(*) FROM app.collections WHERE id=:'target_collection' AND state='running'
    AND context->>'reassessment_of_collection_id'=:'expected_parent'
-   AND context->'config'->>'schema_version'='1.2') || '|' ||
+   AND context->'config'->>'schema_version'=:'expected_schema'
+   AND (:'expected_schema'='1.2' OR
+        (context->>'execution_version'='collection-3' AND jsonb_array_length(context->'selected_model_ids')=5))) || '|' ||
  (SELECT count(*) FROM app.collections WHERE state IN ('discovering','running'));
 COMMIT;
 SQL

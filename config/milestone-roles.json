@@ -1,0 +1,34 @@
+{
+  "research": {
+    "reasoning_effort": "high",
+    "max_output_tokens": 16384
+  },
+  "applicability": {
+    "reasoning_effort": "high",
+    "max_output_tokens": 16384
+  },
+  "critic": {
+    "reasoning_effort": "high",
+    "max_output_tokens": 16384
+  },
+  "neutrality": {
+    "reasoning_effort": "medium",
+    "max_output_tokens": 4096
+  },
+  "repair": {
+    "reasoning_effort": "high",
+    "max_output_tokens": 16384
+  },
+  "verifier": {
+    "reasoning_effort": "high",
+    "max_output_tokens": 16384
+  },
+  "factors": {
+    "reasoning_effort": "high",
+    "max_output_tokens": 16384
+  },
+  "factor_neutrality": {
+    "reasoning_effort": "medium",
+    "max_output_tokens": 4096
+  }
+}

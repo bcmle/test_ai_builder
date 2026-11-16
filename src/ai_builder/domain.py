@@ -1,6 +1,6 @@
 """Strict analytical contracts; provider output cannot decide ranking or eligibility."""
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 from collections import Counter
 from enum import StrEnum
 import re
@@ -27,6 +27,29 @@ class Interval(Contract):
 class Factor(Interval):
     low: Decimal = Field(ge=0, le=4)
     high: Decimal = Field(ge=0, le=4)
+
+
+def rounded_days(value: Interval | None) -> Interval | None:
+    if value is None:
+        return None
+    return Interval(low=value.low.to_integral_value(rounding=ROUND_CEILING),
+                    high=value.high.to_integral_value(rounding=ROUND_CEILING))
+
+
+def timing_factor(value: Interval | None) -> Factor | None:
+    days = rounded_days(value)
+    if days is None:
+        return None
+    def anchor(day):
+        return 4 if day<=14 else 3 if day<=30 else 2 if day<=60 else 1 if day<=90 else 0
+    return Factor(low=anchor(days.high),high=anchor(days.low))
+
+
+def total_payment_days(preparation: Interval | None, payment_cycle: Interval | None) -> Interval | None:
+    first,second = rounded_days(preparation),rounded_days(payment_cycle)
+    if first is None or second is None:
+        return None
+    return Interval(low=first.low+second.low,high=first.high+second.high)
 
 
 class Criterion(Contract):
@@ -204,6 +227,17 @@ class Claim(Contract):
     assumptions: list[str] = Field(default_factory=list)
 
 
+class MilestoneClaim(Claim):
+    start_event: Literal['assessment_start','offer_ready','first_payment_received'] | None
+    end_event: Literal['assessment_start','offer_ready','first_payment_received'] | None
+
+    @model_validator(mode='after')
+    def milestone_pair(self):
+        if (self.start_event is None) != (self.end_event is None):
+            raise ValueError('A time estimate requires both milestone boundaries')
+        return self
+
+
 class Risk(Contract):
     risk_id: str
     impact: int = Field(ge=1, le=3)
@@ -231,6 +265,11 @@ class HandoffClaim(Contract):
     formula: str | None
     input_claim_ids: list[str]
     quantity_estimate: Interval | None
+
+
+class MilestoneHandoffClaim(HandoffClaim):
+    start_event: Literal['assessment_start','offer_ready','first_payment_received'] | None
+    end_event: Literal['assessment_start','offer_ready','first_payment_received'] | None
 
 
 FACTOR_PROJECTION_POLICY = 'factor-neutral-projection-repair-1'

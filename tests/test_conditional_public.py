@@ -224,7 +224,7 @@ def test_pending_cards_keep_previous_findings_inline_without_current_score(confi
         assert 'Previous source document' in detail
         assert 'Previous claim passport retained for reference.' in detail
         assert 'excluded from the current ranking and comparison' in detail
-        assert 'No score is available for this assessment.' in detail
+        assert 'No score yet' in detail
         assert detail.count('id="criteria"') == 1 and detail.count('id="sources"') == 1
         current_json = client.get('/runs/reassessment-a?format=json').json()['models'][0]
         assert current_json['score'] is None and current_json['criteria'] == [] and current_json['sources'] == []

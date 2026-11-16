@@ -29,7 +29,7 @@
     let selected = [];
     try { selected = JSON.parse(sessionStorage.getItem(key) || '[]'); } catch (_) {}
     if (!Array.isArray(selected)) selected = [];
-    selected = [...new Set(selected.filter(value => typeof value === 'string'))].slice(0, 3);
+    selected = [...new Set(selected.filter(value => typeof value === 'string' && boxes.some(box => box.dataset.compareId === value)))].slice(0, 3);
     const update = () => {
       boxes.forEach(box => { box.checked = selected.includes(box.dataset.compareId); });
       bar.hidden = selected.length === 0;
@@ -50,14 +50,21 @@
     bar.querySelector('[data-clear-compare]').addEventListener('click', () => { selected = []; update(); });
     update();
   }
-  document.querySelectorAll('a[href^="#claim-"]').forEach(link => link.addEventListener('click', () => {
-    const target = document.getElementById(link.getAttribute('href').slice(1));
-    if (target && target.tagName === 'DETAILS') target.open = true;
+  const revealHash = hash => {
+    let id;
+    try { id = decodeURIComponent(hash.slice(1)); } catch (_) { return; }
+    const target = document.getElementById(id);
+    if (!target) return;
+    for (let element = target; element; element = element.parentElement) {
+      if (element.tagName === 'DETAILS') element.open = true;
+    }
+    requestAnimationFrame(() => target.scrollIntoView({ block: 'start' }));
+  };
+  document.querySelectorAll('a[href^="#"]').forEach(link => link.addEventListener('click', () => {
+    revealHash(link.getAttribute('href'));
   }));
-  if (location.hash.startsWith('#claim-')) {
-    const claim = document.getElementById(location.hash.slice(1));
-    if (claim && claim.tagName === 'DETAILS') claim.open = true;
-  }
+  window.addEventListener('hashchange', () => revealHash(location.hash));
+  if (location.hash) revealHash(location.hash);
   const progress = document.querySelector('[data-progress-active="true"]');
   if (progress) {
     const timer = setInterval(async () => {

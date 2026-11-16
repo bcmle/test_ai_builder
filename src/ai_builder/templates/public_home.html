@@ -8,7 +8,7 @@
     <p>Explore business models, question the assumptions, and follow the evidence before you launch.</p>
     <div class="hero-actions"><a class="button" href="{% if snapshot %}/runs/{{ snapshot.run_id }}{% else %}#research{% endif %}">Explore the research <span aria-hidden="true">→</span></a><a class="button button-outline" href="/methodology">How it works</a></div>
     {% if snapshot %}
-    <ul class="hero-context" aria-label="Research context"><li>{{ snapshot.selected_count }} models selected</li><li>{{ snapshot.scenario.days }}-day launch horizon</li><li>Sources you can inspect</li></ul>
+    <ul class="hero-context" aria-label="Research context"><li>{% if snapshot.catalog_count %}{{ snapshot.catalog_count }} catalog models · {{ snapshot.selected_count }} selected updates{% else %}{{ snapshot.selected_count }} models selected{% endif %}</li><li>{{ snapshot.scenario.days }}-day launch horizon</li><li>Sources you can inspect</li></ul>
     <p class="hero-footnote">{{ snapshot.market }} · {{ snapshot.status|title }} collection · Updated {{ snapshot.published_at|date }}</p>
     <p class="hero-footnote">{{ snapshot.completed_count }} / {{ snapshot.expected_count }} assessments processed. Processing does not mean approval.</p>
     {% else %}
@@ -28,7 +28,7 @@
   {% endif %}
 </div></div></section>
 <section class="section home-collection" id="research"><div class="wrap">
-  <div class="section-heading"><div><span class="eyebrow">The current collection</span><h2>Ideas worth a closer look.</h2></div>{% if snapshot %}<a class="understated-link" href="/runs/{{ snapshot.run_id }}">View all {{ snapshot.selected_count }} models <span aria-hidden="true">↗</span></a>{% endif %}</div>
+  <div class="section-heading"><div><span class="eyebrow">The current collection</span><h2>Ideas worth a closer look.</h2></div>{% if snapshot %}<a class="understated-link" href="/runs/{{ snapshot.run_id }}">View all {{ snapshot.catalog_count or snapshot.selected_count }} models <span aria-hidden="true">↗</span></a>{% endif %}</div>
   {% if snapshot %}
     <div class="collection-line"><span>{{ snapshot.title }}</span><span>{{ snapshot.published_at|date }} · {{ snapshot.market }}</span></div>
     <div class="model-grid">{% for model in featured %}{{ model_card(model, snapshot) }}{% endfor %}</div>

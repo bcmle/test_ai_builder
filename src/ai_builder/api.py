@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 
@@ -22,7 +23,69 @@ from psycopg_pool import PoolTimeout
 from .config import load_config
 from .pg_execution import execution_pool
 from .pg_migrate import MIGRATIONS
-from .public import CRITERIA, FACTORS, GOALS, STAGES, STATUS_LABELS, load_featured_followup, load_snapshot
+from .public import (CONDITIONAL_CRITERIA, CRITERIA, FACTORS, GOALS, STAGES, STATUS_LABELS, load_featured_followup,
+                     load_snapshot, snapshot_ancestors)
+
+
+def _literal_excerpt(value, words, sentences=None):
+    """A bounded source excerpt, never a generated paraphrase."""
+    original = str(value or '').strip()
+    end = len(original)
+    if sentences:
+        stops = list(re.finditer(r'[.!?](?=\s|$)', original))
+        if len(stops) >= sentences:
+            end = stops[sentences - 1].end()
+    tokens = list(re.finditer(r'\S+', original[:end]))
+    if len(tokens) > words:
+        end = tokens[words - 1].end()
+    text = original[:end].rstrip()
+    return text + (' …' if original[end:].strip() else '')
+
+
+def _ceo_summary(model):
+    """Presentation only; the published assessment and its hashes stay intact."""
+    claims = {claim['id']: claim for claim in model['claims']}
+    risks = []
+    for index, risk in enumerate(model['risks'][:3], 1):
+        judgment = next((claims[cid] for cid in risk['claim_ids']
+                         if cid in claims and claims[cid]['kind'] == 'judgment'), None)
+        risks.append(dict(text=_literal_excerpt(judgment['text'] if judgment else risk['text'], 16, 1),
+                          href=f"#claim-{judgment['id']}" if judgment else f'#risk-{index}'))
+    next_step = None
+    for cid in model['test_plan_claim_ids']:
+        claim = claims.get(cid)
+        if not claim:
+            continue
+        text = claim['text']
+        action = re.search(r'\bFirst action(?: on [^:\n]+)?:\s*', text, re.IGNORECASE)
+        if action:
+            text = text[action.end():]
+        next_step = dict(text=_literal_excerpt(text, 18, 1), href=f'#claim-{cid}')
+        break
+    factors = {factor['id']: factor for factor in model['factors']}
+    missing = sum(not factors.get(fid, {}).get('value') for fid in FACTORS)
+    required = [criterion for criterion in model['criteria']
+                if not model.get('scoring_policy_version') or criterion['id'] not in CONDITIONAL_CRITERIA]
+    if model['status'] in {'queued', 'running', 'technical_failed', 'incomplete'}:
+        reason = {'queued': 'Update queued.', 'running': 'Research in progress.',
+                  'technical_failed': 'Update interrupted.', 'incomplete': 'Assessment incomplete.'}[model['status']]
+    elif any(criterion['result'] == 'fail' and (not model.get('scoring_policy_version')
+             or criterion['id'] not in {'F05', 'F06', 'F07'}) for criterion in model['criteria']):
+        reason = 'An exclusion criterion failed.'
+    elif any(criterion['result'] == 'unknown' for criterion in required):
+        reason = 'Required eligibility checks remain unknown.'
+    elif missing:
+        reason = f'{missing} scoring factor' + ('s remain' if missing != 1 else ' remains') + ' unknown.'
+    else:
+        reason = 'Score validation is incomplete.'
+    return dict(summary=_literal_excerpt(model['summary'], 28, 3),
+                buyer=_literal_excerpt(model.get('buyer'), 8),
+                revenue=_literal_excerpt(model.get('revenue'), 8),
+                comparable=_literal_excerpt(model.get('comparable'), 6),
+                risks=risks, next_step=next_step, score_reason=reason,
+                factors=[dict(id=fid, name=factors.get(fid, {}).get('name') or name,
+                             **{key: factors.get(fid, {}).get(key)
+                             for key in ('value', 'claim_ids')}) for fid, name in FACTORS.items()])
 
 
 async def check_database(pool):
@@ -91,6 +154,18 @@ def create_app(data_dir=None, config_path=None, *, database_url=None, technical_
             raise HTTPException(404, 'Published research not found')
         return snapshot
 
+    def update_context(snapshot, model):
+        selected = snapshot.get('selected_model_ids')
+        return dict(retained_assessment=(snapshot.get('retained_assessments') or {}).get(model['id']),
+                    not_selected=bool(selected and model['id'] not in selected),
+                    update_state=(snapshot.get('update_states') or {}).get(model['id']))
+
+    def current_reassessment(snapshot):
+        latest = load_snapshot(data)
+        if latest and snapshot['run_id'] in {ancestor['run_id'] for ancestor in snapshot_ancestors(data, latest)}:
+            return latest
+        return None
+
     @app.api_route('/', methods=['GET', 'HEAD'], response_class=HTMLResponse)
     async def home():
         snapshot = load_snapshot(data)
@@ -106,21 +181,28 @@ def create_app(data_dir=None, config_path=None, *, database_url=None, technical_
         query = request.query_params.get('q', '')[:120].strip()
         status = request.query_params.get('status', '')
         category = request.query_params.get('category', '')
+        def visible_status(model):
+            update = update_context(snapshot, model)
+            if update['not_selected']:
+                return 'not_selected'
+            return update['update_state'] if update['retained_assessment'] else model['status']
         models = [m for m in snapshot['models'] if
                   (not query or query.casefold() in ' '.join(str(m.get(key) or '') for key in ('title', 'buyer', 'summary')).casefold())
-                  and (status not in STATUS_LABELS or m['status'] == status)
+                  and (status not in {*STATUS_LABELS, 'not_selected'} or visible_status(m) == status)
                   and (not category or m['category'] == category)]
-        ranking = {goal: sorted((m for m in snapshot['models'] if m['rank'] is not None and m['score']['status'] == 'final' and
+        current_models = [m for m in snapshot['models'] if m['id'] not in snapshot.get('retained_assessments', {})]
+        ranking = {goal: sorted((m for m in current_models if m['rank'] is not None and m['score']['status'] == 'final' and
                                  m['score']['goal_feasibility'] == goal), key=lambda m: (m['rank'], m['title'], m['id']))
                    for goal in GOALS}
-        conditional_ranking = {goal: sorted((m for m in snapshot['models'] if m['rank'] is not None and
+        conditional_ranking = {goal: sorted((m for m in current_models if m['rank'] is not None and
                                  m['score']['status'] == 'conditional' and m['score']['goal_feasibility'] == goal),
                                  key=lambda m: (m['rank'], m['title'], m['id'])) for goal in GOALS}
-        counts = {status: sum(m['status'] == status for m in snapshot['models'])
+        counts = {status: sum(m['status'] == status for m in current_models)
                   for status in ('pass', 'fail', 'needs_review', 'confirmed', 'conditional', 'blocked', 'unresolved')}
-        counts['unfinished'] = sum(m['status'] in {'queued', 'running', 'incomplete', 'technical_failed'} for m in snapshot['models'])
-        latest = load_snapshot(data)
-        reassessment = latest if latest and latest.get('reassessment_of_collection_id') == snapshot['run_id'] else None
+        counts['unfinished'] = (sum(state != 'completed' for state in snapshot['update_states'].values())
+                                if snapshot.get('selected_model_ids') else
+                                sum(m['status'] in {'queued', 'running', 'incomplete', 'technical_failed'} for m in snapshot['models']))
+        reassessment = current_reassessment(snapshot)
         return page('public_run.html', snapshot=snapshot, models=models, ranking=ranking,
                     conditional_ranking=conditional_ranking,
                     conditional_count=sum(len(group) for group in conditional_ranking.values()), reassessment=reassessment,
@@ -135,24 +217,31 @@ def create_app(data_dir=None, config_path=None, *, database_url=None, technical_
         if model is None:
             raise HTTPException(404, 'Model not found in this published collection')
         followup = load_featured_followup(data)
-        if followup and (followup['parent_collection_id'] not in {snapshot['run_id'], snapshot.get('reassessment_of_collection_id')}
+        ancestors = snapshot_ancestors(data, snapshot)
+        if followup and (followup['parent_collection_id'] not in {snapshot['run_id'], *(parent['run_id'] for parent in ancestors)}
                          or followup['parent_model_id'] != model['id']
                          or followup['models'][0]['base_model_id'] != model['base_model_id']):
             followup = None
-        latest = load_snapshot(data)
-        reassessment = latest if latest and latest.get('reassessment_of_collection_id') == snapshot['run_id'] else None
+        reassessment = current_reassessment(snapshot)
         previous_snapshot = previous_model = None
-        if model['status'] in {'queued', 'running', 'technical_failed'} and snapshot.get('reassessment_of_collection_id'):
-            parent = load_snapshot(data, snapshot['reassessment_of_collection_id'])
-            if parent and parent['scenario'] == snapshot['scenario'] and parent['market'] == snapshot['market']:
+        update = update_context(snapshot, model)
+        retained = update['retained_assessment']
+        if retained:
+            parent = load_snapshot(data, retained['run_id'], revision_id=retained['revision_id'])
+            if parent:
+                previous_snapshot = parent
+        elif model['status'] in {'queued', 'running', 'technical_failed'}:
+            for parent in ancestors:
                 prior = next((item for item in parent['models'] if item['id'] == model['id']
                               and item['base_model_id'] == model['base_model_id']), None)
                 if prior and prior['status'] in {'pass', 'fail', 'needs_review', 'confirmed', 'conditional', 'blocked', 'unresolved'}:
                     previous_snapshot, previous_model = parent, prior
+                    break
         return page('public_model.html', snapshot=snapshot, model=model, reassessment=reassessment,
+                    ceo=_ceo_summary(model),
                     followup=followup, previous_snapshot=previous_snapshot, previous_model=previous_model,
                     previous_sources={s['id']: s for s in previous_model['sources']} if previous_model else {},
-                    sources={s['id']: s for s in model['sources']})
+                    sources={s['id']: s for s in model['sources']}, **update)
 
     @app.api_route('/compare', methods=['GET', 'HEAD'], response_class=HTMLResponse)
     @app.api_route('/runs/{run_id}/compare', methods=['GET', 'HEAD'], response_class=HTMLResponse)
@@ -168,6 +257,10 @@ def create_app(data_dir=None, config_path=None, *, database_url=None, technical_
             return page('public_error.html', status_code=409, snapshot=snapshot,
                         message='This research has been updated. Select models again to compare the current revision.')
         selected = [next(m for m in snapshot['models'] if m['id'] == identifier) for identifier in identifiers]
+        if snapshot.get('selected_model_ids') and any(identifier not in snapshot['selected_model_ids']
+                or identifier in snapshot['retained_assessments'] for identifier in identifiers):
+            return page('public_error.html', status_code=409, snapshot=snapshot,
+                        message='Compare completed updates from this revision. Retained assessments keep their original policy and are outside this comparison.')
         return page('public_compare.html', snapshot=snapshot, models=selected)
 
     @app.api_route('/methodology', methods=['GET', 'HEAD'], response_class=HTMLResponse)
