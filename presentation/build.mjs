@@ -12,17 +12,6 @@ const C = { ink:'#282136', paper:'#F5F4E9', muted:'#66616F', green:'#96E3B1', am
 const font = 'Arial';
 const site = 'https://ai-builder-lab.com/';
 const compare = `${site}compare?models=23c49394cadf4e0ab3b7f78d9d70373a,03b5d22868b44bbb975d3cfc01d46f93&run=${data.run_id}&revision=${data.revision_id}`;
-const notes = [
-  "Я создал и развернул сайт для выбора бизнес-модели и платного теста за девяносто дней. В каталоге двадцать моделей: пять получили условные оценки после проверки агентами, пятнадцать требуют исследования. Главный результат — сравнимые карточки для решения собственника.",
-  "Сайт доступен по этому адресу. Агенты работают на сервере Aeza, PostgreSQL хранит результаты, расходы и прогресс. Исследование запускает оператор. Для сдачи есть сайт, репозиторий с историей коммитов, короткий файл пяти решений и список ограничений. Видео показывает, как этим пользоваться.",
-  "Здесь двадцать моделей по десяти обязательным факторам. Мятным отмечены подтверждения, сиреневым — пробелы. Явно отсеянных моделей сейчас ноль: отсутствие данных не равно отказу. Главные открытые вопросы — законность запуска и собственная лицензия. Пять оценок условные: анализ завершён, но условия нужно закрыть до запуска.",
-  "Критик ищет препятствия, проверяющий получает документы без выводов критика. Пять моделей прошли оба этапа. Неоговорённые в задании ситуации я решил явно. При временной ошибке провайдера предусмотрены ограниченные повторы и сохранение прогресса; технический сбой не означает плохую модель. Противоречащие версии источников сохраняются. Существенный нерешённый конфликт блокирует рейтинг.",
-  "Карточка — главный результат. Единая структура показывает покупателя, выручку, бюджет, сроки, оценку, риски и источники. Так собственник сравнивает одни и те же параметры. На сайте выберите до трёх моделей одной версии и откройте сравнение. Цель — за две минуты понять, что запускать, а что отложить. Здесь у рефералов балл выше, но срок может выйти за девяносто дней. Одного балла недостаточно.",
-  "Веса я выбрал под первую оплату: по двадцать пять процентов за доступ к клиентам и свидетельства готовности платить, по двадцать за подготовку и срок оплаты, десять за ресурсы. Спрос важнее удобства разработки. Условия единые: два человека, пятнадцать тысяч долларов без зарплат, США. Обоснования и отвергнутые альтернативы записаны в файле решений. Балл не является вероятностью успеха.",
-  "Честные ограничения: пятнадцать моделей требуют проверки, юридические условия открыты, кнопки запуска на сайте пока нет, платного пилота ещё нет. Оператор запускает процесс на сервере, дальше работают агенты. Следующий шаг — закрыть условия одной модели и получить реального платящего клиента. В полной версии добавлю кабинет владельца и историю экспериментов. Из задания убрал бы точную вероятность без статистики, а обязательность аналога от трёхсот миллионов предложил бы пересмотреть."
-];
-const titles = ['Результат проекта','Сайт и комплект сдачи','Обязательные факторы F01–F10','Агенты, сбои и противоречия','Карточка — главный результат','Веса и причины решений','Ограничения и следующий шаг'];
-const timings = ['0:00–0:17','0:17–0:37','0:37–0:59','0:59–1:25','1:25–1:55','1:55–2:24','2:24–2:55'];
 function text(s,t,x,y,w,h,size=26,color=C.ink,bold=false,link=null){
  const q=s.shapes.add({geometry:'textbox',name:t.slice(0,65),position:{left:x,top:y,width:w,height:h},fill:'none',line:{fill:'none',width:0}});
  q.text=t;q.text.style={fontFamily:font,fontSize:size,color,bold,insets:0,verticalAlignment:'top',wrap:true};
@@ -31,7 +20,7 @@ function text(s,t,x,y,w,h,size=26,color=C.ink,bold=false,link=null){
 function slide(i,bg=C.paper){
  const s=p.slides.add();s.background.fill=bg;
  const sources=[data.source_url,'https://github.com/bcmle/test_ai_builder',site+'methodology'];
- s.speakerNotes.text=`${timings[i]}\n\n${notes[i]}\n\nИсточники: ${sources.join('\n')}\nСрез: ${data.published_at}; revision ${data.revision_id}.`;
+ s.speakerNotes.text=`Источники: ${sources.join('\n')}\nСрез: ${data.published_at}; revision ${data.revision_id}.`;
  return s;
 }
 function folio(s,i,dark=false,label='AI BUILDER'){
@@ -172,12 +161,12 @@ const deckRoot=repo+'/blob/codex/ceo-presentation/presentation/';
 const links=[
  ['Сайт: ai-builder-lab.com',site],['Сравнение карточек',compare],
  ['GitHub · исходный код',repo],['5 решений и ограничения',deckRoot+'decisions.md'],
- ['Презентация · PPTX',deckRoot+'AI-Builder-CEO.pptx'],['Сценарий видео',deckRoot+'speaker-notes.md'],
- ['Методика оценки',site+'methodology'],['Результаты исследования',data.source_url]
+ ['Презентация · PPTX',deckRoot+'AI-Builder-CEO.pptx'],
+ ['Методика оценки',site+'methodology']
 ];
 for(let i=0;i<links.length;i++){
- const x=64+(i%4)*292,y=587+Math.floor(i/4)*42;
- text(s,links[i][0]+' ↗',x,y,282,32,18,C.ink,true,links[i][1]);
+ const x=64+(i%3)*390,y=587+Math.floor(i/3)*42;
+ text(s,links[i][0]+' ↗',x,y,370,32,18,C.ink,true,links[i][1]);
 }
 folio(s,6,false,'Все ссылки кликабельны');
 s.speakerNotes.text+='\n\nСсылки:\n'+links.map(([label,url])=>label+': '+url).join('\n');
@@ -187,5 +176,4 @@ for(let i=0;i<p.slides.items.length;i++){
  const b=await p.export({slide:p.slides.items[i],format:'png',scale:1});
  await fs.writeFile(path.join(out,`slide-${i+1}.png`),new Uint8Array(await b.arrayBuffer()));
 }
-await fs.writeFile(path.join(out,'speaker-notes.md'),'# Сценарий защиты: до 3 минут (план — 2:55)\n\n'+notes.map((v,i)=>`## ${i+1}. ${titles[i].replaceAll('\n',' ')} (${timings[i]})\n\n${v}`).join('\n\n')+'\n');
-console.log(JSON.stringify({slides:p.slides.items.length,out,spokenWords:notes.join(' ').split(/\s+/).length}));
+console.log(JSON.stringify({slides:p.slides.items.length,out}));
