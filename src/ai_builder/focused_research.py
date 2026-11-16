@@ -58,7 +58,9 @@ async def run_focused(pool, artifacts, *, parent_collection_id, model_id,
             existing = await (await conn.execute('''SELECT r.id,r.status,rc.context,r.config_json,r.created_at
                 FROM app.research_contexts rc JOIN app.runs r ON r.id=rc.run_id
                 WHERE r.study_id=%s AND rc.context->>'parent_collection_id'=%s
-                AND rc.context->>'parent_run_id'=%s ORDER BY r.created_at''',
+                AND rc.context->>'parent_run_id'=%s
+                AND NOT EXISTS (SELECT 1 FROM app.collection_items member WHERE member.run_id=r.id)
+                ORDER BY r.created_at''',
                 (collection['study_id'], parent_collection_id, item['run_id']))).fetchall()
         if existing:
             latest = existing[-1]

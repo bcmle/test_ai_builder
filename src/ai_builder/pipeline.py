@@ -4,6 +4,7 @@ Discovery/fetch supplies the immutable ScopePacket. No arbitrary GraphState is
 sent to a model. Production publication and owner review are separate boundaries.
 """
 from datetime import datetime, timezone
+import re
 from typing import Literal, TypedDict
 
 from langgraph.graph import StateGraph, START, END
@@ -66,6 +67,32 @@ class LegalClause(Contract):
         return self
 
 
+class LegalDocumentValue(Contract):
+    value: str | None = Field(max_length=500)
+    excerpt: str | None = Field(max_length=600)
+    locator: str | None = Field(max_length=180)
+    unknown_reason: str | None = Field(max_length=400)
+
+    @model_validator(mode='after')
+    def coherent(self):
+        if self.value is None:
+            if not self.unknown_reason or not self.unknown_reason.strip() or self.excerpt is not None or self.locator is not None:
+                raise ValueError('Unknown legal document value requires a reason, without fabricated quotation')
+        elif (not self.value.strip() or not self.excerpt or not self.excerpt.strip()
+              or not self.locator or not self.locator.strip() or self.unknown_reason is not None):
+            raise ValueError('Known legal document value requires an exact quotation and locator')
+        return self
+
+
+class LegalDocumentAnalysis(Contract):
+    evidence_id: str
+    source_snapshot_id: str
+    version: LegalDocumentValue
+    effective_date: LegalDocumentValue
+    supplier_legal_entity: LegalDocumentValue
+    applicability: LegalDocumentValue
+
+
 class LegalReviewAnalysis(Contract):
     analogue_id: str
     coverage: Literal['reviewed', 'insufficient', 'not_found', 'unavailable']
@@ -73,6 +100,7 @@ class LegalReviewAnalysis(Contract):
     our_role_applicability: str = Field(min_length=1, max_length=2500)
     clauses: list[LegalClause] = Field(max_length=16)
     gaps: list[str] = Field(max_length=20)
+    document_metadata: list[LegalDocumentAnalysis] = Field(max_length=64)
 
     @model_validator(mode='after')
     def meaningful(self):
@@ -242,7 +270,18 @@ V15_PROMPTS['research'] += (
     'Terms, privacy policies and DPA establish contractual statements, not actual legal compliance. Governing law '
     'is not a list of permitted markets; a software licence is not a regulatory licence; silence is not exemption. '
     'Compare actual roles and jurisdiction; do not transfer the analogue or partner licence to our business. '
-    'Keep clauses concise: cite the most relevant provisions, with gaps for unread or insufficient material.')
+    'Keep clauses concise: cite the most relevant provisions, with gaps for unread or insufficient material. '
+    'For EVERY readable legal document (disposition read/duplicate), return exactly one document_metadata entry '
+    'with its exact evidence_id/source_snapshot_id. Do not create entries for unavailable documents. For version, '
+    'effective_date and supplier_legal_entity, copy the value literally from the document and support it with a '
+    'short exact excerpt and locator. No normalization or inferred dates: fetched_at/retrieval dates, copyright '
+    'years and publication/update dates are NOT effective dates. An effective date must be explicitly stated as '
+    'the date the document takes effect; otherwise value=null with a concise unknown_reason. Do not infer a legal '
+    'entity from the product/domain/brand. Every unknown field has a reason and excerpt/locator=null; every known '
+    'field has unknown_reason=null. Each document also has applicability: a concise finding about its relevance '
+    'to our proposed role, supported by an exact source excerpt, or value=null and an explicit reason its text '
+    'is insufficient. Cover Privacy/DPA/AUP and other readable documents individually, even when they have no '
+    'decisive legal effect. Limit each quotation to the shortest supporting phrase; do not repeat whole paragraphs.')
 V15_PROMPTS['applicability'] += (
     ' Scoring policy 1.5.2: independently evaluate every requested criterion, including unknown research outcomes '
     'which are not shown. Return evidence_ids and permitted exact design_basis for your conclusion. '
@@ -514,8 +553,23 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
                              if d.get('disposition', 'read') in {'read', 'duplicate'}}
                 if not legal_ids and (review.clauses or review.coverage != source['coverage'] or not review.gaps):
                     raise ValueError('Unavailable legal documents require honest coverage and explicit gaps')
-                if legal_ids and (not review.clauses or review.coverage not in {'reviewed', 'insufficient'}):
-                    raise ValueError('Acquired legal documents require quoted substantive review')
+                if legal_ids and review.coverage not in {'reviewed', 'insufficient'}:
+                    raise ValueError('Acquired legal documents require honest review coverage')
+                if (len(review.document_metadata) != len(legal_ids)
+                        or {item.evidence_id for item in review.document_metadata} != legal_ids):
+                    raise ValueError('Legal document analysis must cover every readable document exactly once')
+                for item in review.document_metadata:
+                    doc = docs.get(item.evidence_id)
+                    if not doc or item.source_snapshot_id != doc.snapshot_id:
+                        raise ValueError('Legal document analysis snapshot is outside its frozen scope')
+                    for field in ('version','effective_date','supplier_legal_entity','applicability'):
+                        value = getattr(item, field)
+                        if value.value is not None and (value.excerpt not in doc.text
+                                or (field != 'applicability' and value.value not in value.excerpt)):
+                            raise ValueError('Legal document metadata must quote the exact source-literal value; applicability requires an exact source quotation')
+                        if (field == 'effective_date' and value.value is not None
+                                and not re.search(r'\b(?:effective|takes?\s+effect|comes?\s+into\s+(?:force|effect)|in\s+force)\b', value.excerpt, re.I)):
+                            raise ValueError('Effective date quotation must explicitly describe taking effect, not retrieval, publication, update or copyright')
                 for clause in review.clauses:
                     doc = docs.get(clause.evidence_id)
                     if (clause.evidence_id not in legal_ids or not doc or doc.snapshot_id != clause.source_snapshot_id
@@ -529,11 +583,36 @@ async def build_scope_graph(ledger, config: Configuration, scope: ScopePacket, r
         result = await call('research',packet,research_type,validator=validate_research)
         output = {'research':result.model_dump(mode='json')}
         if modern:
-            output['legal_reviews'] = [{**legal_sources[r.analogue_id],
-                'source_coverage': legal_sources[r.analogue_id]['coverage'], 'coverage':r.coverage,
-                'supplier_role':r.supplier_role, 'our_role_applicability':r.our_role_applicability,
-                'clauses':[c.model_dump(mode='json') for c in r.clauses], 'analysis_gaps':r.gaps}
-                for r in result.legal_reviews]
+            reviews = []
+            for review in result.legal_reviews:
+                source = legal_sources[review.analogue_id]
+                by_document = {item.evidence_id:item for item in review.document_metadata}
+                reviewed_documents = []
+                for document in source.get('documents', []):
+                    derived = {**document, 'metadata_evidence':{}, 'metadata_unknown_reasons':{}}
+                    analysis = by_document.get(document.get('evidence_id'))
+                    for field in ('version','effective_date','supplier_legal_entity','applicability'):
+                        value = getattr(analysis, field) if analysis else None
+                        known = value is not None and value.value is not None
+                        reference = dict(evidence_id=analysis.evidence_id, source_snapshot_id=analysis.source_snapshot_id,
+                                         excerpt=value.excerpt, locator=value.locator) if known else None
+                        reason = value.unknown_reason if value else 'Document was not readable; no analytical value was established.'
+                        if field == 'applicability':
+                            derived.update(applicability_finding=value.value if known else None,
+                                           applicability_evidence=reference, applicability_unknown_reason=None if known else reason)
+                        else:
+                            derived[field] = value.value if known else None
+                            if known:
+                                derived['metadata_evidence'][field] = reference
+                            else:
+                                derived['metadata_unknown_reasons'][field] = reason
+                    derived['unknown_date_reason'] = derived['metadata_unknown_reasons'].get('effective_date')
+                    reviewed_documents.append(derived)
+                reviews.append({**source, 'documents':reviewed_documents, 'source_coverage':source['coverage'],
+                    'coverage':review.coverage, 'supplier_role':review.supplier_role,
+                    'our_role_applicability':review.our_role_applicability,
+                    'clauses':[c.model_dump(mode='json') for c in review.clauses], 'analysis_gaps':review.gaps})
+            output['legal_reviews'] = reviews
         return output
 
     def validate_applicability(result, selected):
