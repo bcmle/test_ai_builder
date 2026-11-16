@@ -65,6 +65,9 @@ class ResearchContext(FrozenContract):
             raise ValueError('A follow-up requires both parent collection and run identifiers')
         if self.parent_collection_id == '' or self.parent_run_id == '':
             raise ValueError('Parent identifiers cannot be empty')
+        if (self.plan.reassessed_from_run_id is not None and self.parent_run_id is not None
+                and self.plan.reassessed_from_run_id != self.parent_run_id):
+            raise ValueError('Reassessment source and collection parent must match')
         ModelRoles(None, self.openai_pricing, '', self.role_settings, purpose=self.purpose,
                    prompt_prefix=self.pipeline_prefix, prompts=self.pipeline_prompts)
         return self
@@ -72,6 +75,8 @@ class ResearchContext(FrozenContract):
 
 def freeze_context(config: Configuration, context: ResearchContext) -> ResearchContext:
     """Select prompts once, before persistence; never change a saved context."""
+    if (config.schema_version == '1.2') != (context.plan.schema_version == '3'):
+        raise ValueError('Conditional scoring requires the explicit per-analogue legal source plan')
     if context.pipeline_prefix is None:
         prefix, prompts = prompt_bundle(config.schema_version)
         context = context.model_copy(update={'pipeline_prefix': prefix, 'pipeline_prompts': prompts})
@@ -219,13 +224,22 @@ async def _save_scope(ledger, prepared: PreparedScope, context: ResearchContext)
 
 
 def _gap_state(config, prepared):
-    return {
+    result = {
         'criteria': [dict(criterion_id=c.id, state='completed', result='unknown', evidence_ids=[],
                           reason='No policy-validated source document was available.') for c in config.criteria],
         'eligibility': 'needs_review',
         'card': dict(assessment_scope_id=prepared.scope.scope_id, eligibility='needs_review', score=None,
                      publication='draft', publication_blockers=['source_documents_unavailable']),
     }
+    if config.schema_version == '1.2':
+        result['criteria'] = [{**item, 'state': 'pending', 'result': None,
+                               'reason': 'Analytical evaluation has not run: no policy-validated source document was available.'}
+                              for item in result['criteria']]
+        result['eligibility'] = 'unresolved'
+        result['card'].update(eligibility='unresolved', scoring_policy_version=config.scoring_policy_version,
+            score_status='not_calculated', eligibility_conditions=[], legal_reviews=prepared.scope.legal_source_reviews,
+            completed_stages=[], analysis_status='needs_review')
+    return result
 
 
 def _write_report(path: Path, scope, state, usage, mode):

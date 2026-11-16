@@ -1,0 +1,35 @@
+{% if model.scoring_policy_version and not historical_assessment %}
+<section class="assessment-checks" aria-labelledby="checks-title">
+  <span class="eyebrow">Scoring policy {{ model.scoring_policy_version }}</span>
+  <h3 id="checks-title">What has been completed.</h3>
+  {% if model.completed_stages %}<ul class="completed-stages">{% for stage in model.completed_stages %}<li>{{ stage_labels[stage] }}</li>{% endfor %}</ul>{% else %}<p class="small muted">No completed analysis stages have been published for this revision yet.</p>{% endif %}
+  {% if model.status == 'technical_failed' %}<p>Research was interrupted by a technical problem. This is not a finding about the business.</p>{% elif model.status == 'unresolved' %}<p>Evidence or the proposed scenario remains unresolved. No ranking is available.</p>{% elif model.status == 'blocked' %}<p>The assessed scenario conflicts with a required business constraint. No ranking is available.</p>{% endif %}
+</section>
+{% endif %}
+{% if model.eligibility_conditions %}
+<section class="section" id="conditions">
+  <div class="section-heading"><div><span class="eyebrow">Assumptions remain visible</span><h2>Conditions before launch.</h2></div><p class="section-aside">A conditional score is a comparative estimate. It does not establish lawfulness or readiness to launch.</p></div>
+  <div class="condition-list">{% for condition in model.eligibility_conditions %}<article class="condition-card">
+    <span class="eyebrow">{{ condition.criterion_id }} · {{ criterion_names[condition.criterion_id] }}</span>
+    <h3>{{ condition.assumption }}</h3>
+    <p><strong>Required check:</strong> {{ condition.required_check }}</p>
+    {% if condition.impact_on_factors %}<p class="small muted">Implications for the assessment: {{ condition.impact_on_factors }}</p>{% endif %}
+    <div class="source-chips">{% for source_id in condition.source_ids %}<a href="#source-{{ source_id }}">{{ sources[source_id].title or 'Evidence source' }}</a>{% endfor %}</div>
+  </article>{% endfor %}</div>
+</section>
+{% endif %}
+{% if model.legal_reviews %}
+<section class="section" id="legal-reviews">
+  <div class="section-heading"><div><span class="eyebrow">Each comparable, examined separately</span><h2>Legal documents.</h2></div><p class="section-aside">“Reviewed” describes document coverage. A vendor’s terms do not prove our business is lawful or exempt from licensing.</p></div>
+  {% for review in model.legal_reviews %}
+  <details class="legal-review"{% if loop.first %} open{% endif %}><summary><strong>{{ review.analogue_name or review.analogue_id }}</strong><span class="result">{{ review.execution_state|replace('_',' ')|title }}{% if review.coverage %} · {{ review.coverage|replace('_',' ')|title }}{% endif %}</span><span class="expand-icon" aria-hidden="true">+</span></summary><div class="legal-review-body">
+    {% if review.supplier_role %}<h4>The supplier’s role</h4><p>{{ review.supplier_role }}</p>{% endif %}
+    {% if review.our_role_applicability %}<h4>Applicability to our proposed role</h4><p>{{ review.our_role_applicability }}</p>{% endif %}
+    {% if review.documents %}<h4>Documents discovered</h4><ul class="legal-documents">{% for document in review.documents %}<li><div>{% if document.url %}<a href="{{ document.url }}" target="_blank" rel="noopener noreferrer">{{ document.title or document.document_type|replace('_',' ')|title }} ↗</a>{% else %}{{ document.title or document.document_type|replace('_',' ')|title }}{% endif %}<span class="small muted">{{ document.document_type|replace('_',' ') }} · {{ document.disposition|replace('_',' ') }}{% if document.effective_date %} · Effective {{ document.effective_date|date }}{% endif %}{% if document.version %} · Version {{ document.version }}{% endif %}{% if document.source_id %} · <a href="#source-{{ document.source_id }}">Saved source</a>{% endif %}</span>{% if document.reason %}<p class="small muted">{{ document.reason }}</p>{% endif %}</div></li>{% endfor %}</ul>{% endif %}
+    {% for clause in review.clauses %}<blockquote><p>“{{ clause.excerpt }}”</p><footer><a href="#source-{{ clause.source_id }}">{{ sources[clause.source_id].title or 'Evidence source' }}</a>{% if clause.locator %} · {{ clause.locator }}{% endif %}</footer></blockquote><p>{{ clause.finding }}</p>{% endfor %}
+    {% if review.gaps %}<div class="legal-gaps"><h4>Coverage gaps</h4><ul>{% for gap in review.gaps %}<li>{{ gap }}</li>{% endfor %}</ul></div>{% endif %}
+    {% if review.search_actions %}<details class="legal-search"><summary>Search and reading activity · {{ review.search_actions|length }} actions</summary><ul>{% for action in review.search_actions %}<li>{{ action }}</li>{% endfor %}</ul></details>{% endif %}
+  </div></details>
+  {% endfor %}
+</section>
+{% endif %}

@@ -9,7 +9,7 @@ import tempfile
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 IDENTIFIER = r'^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$'
 CRITERIA = {
@@ -23,10 +23,19 @@ FACTORS = {'S01': 'Access to customers', 'S02': 'Evidence of willingness to pay'
            'S05': 'Fit with available resources'}
 STATUS_LABELS = {'queued': 'Queued', 'running': 'Researching', 'pass': 'Passed filters',
                  'fail': 'Filtered out', 'needs_review': 'Needs review',
+                 'confirmed': 'Confirmed', 'conditional': 'Conditional',
+                 'blocked': 'Blocked', 'unresolved': 'Unresolved',
                  'technical_failed': 'Research interrupted', 'incomplete': 'Incomplete'}
 GOALS = {'infeasible': 'Outside the launch scenario', 'uncertain': 'Launch feasibility uncertain',
          'feasible': 'Fits the launch scenario'}
-TERMINAL = {'pass', 'fail', 'needs_review', 'technical_failed', 'incomplete'}
+TERMINAL = {'pass', 'fail', 'needs_review', 'technical_failed', 'incomplete',
+            'confirmed', 'conditional', 'blocked', 'unresolved'}
+CONDITIONAL_CRITERIA = {'F01', 'F03', 'F05', 'F06', 'F07'}
+STAGES = {'research': 'Criteria research', 'applicability': 'Independent applicability check',
+          'legal_review': 'Legal document review', 'critic': 'Critic', 'neutrality': 'Neutral handoff',
+          'verifier': 'Independent verifier', 'reconciliation': 'Risk reconciliation',
+          'factors': 'Factor assessment', 'factor_validation': 'Factor premise verification',
+          'card_validation': 'Publication checks', 'scoring': 'Scoring'}
 
 
 def safe_url(value):
@@ -135,7 +144,7 @@ class Factor(PublicContract):
 
 
 class Score(PublicContract):
-    status: Literal['final', 'provisional']
+    status: Literal['final', 'conditional', 'provisional']
     value: float = Field(ge=0, le=100)
     low: float = Field(ge=0, le=100)
     high: float = Field(ge=0, le=100)
@@ -155,6 +164,54 @@ class Risk(PublicContract):
     claim_ids: list[str] = Field(default_factory=list)
 
 
+class EligibilityCondition(PublicContract):
+    condition_id: str
+    criterion_id: str
+    assumption: str
+    required_check: str
+    impact_on_factors: str
+    source_ids: list[str] = Field(default_factory=list)
+
+
+class LegalDocument(PublicContract):
+    url: str | None = None
+    title: str | None = None
+    document_type: str
+    disposition: str
+    source_id: str | None = None
+    effective_date: str | None = None
+    version: str | None = None
+    reason: str | None = None
+
+    @field_validator('url')
+    @classmethod
+    def checked_url(cls, value):
+        return safe_url(value)
+
+
+class LegalClause(SourceRef):
+    finding: str
+
+
+class LegalReview(PublicContract):
+    analogue_id: str
+    analogue_name: str | None = None
+    execution_state: Literal['pending', 'running', 'completed', 'technical_failed']
+    coverage: Literal['reviewed', 'insufficient', 'not_found', 'unavailable'] | None = None
+    supplier_role: str | None = None
+    our_role_applicability: str | None = None
+    documents: list[LegalDocument] = Field(default_factory=list)
+    clauses: list[LegalClause] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    search_actions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode='after')
+    def completed_coverage(self):
+        if (self.execution_state == 'completed') != (self.coverage is not None):
+            raise ValueError('Legal coverage belongs only to a completed review')
+        return self
+
+
 class Model(PublicContract):
     id: str = Field(pattern=IDENTIFIER)
     base_model_id: str
@@ -165,7 +222,13 @@ class Model(PublicContract):
     revenue: str | None = None
     comparable: str | None = None
     description_basis: Literal['proposed_launch'] = 'proposed_launch'
-    status: Literal['queued', 'running', 'pass', 'fail', 'needs_review', 'technical_failed', 'incomplete']
+    status: Literal['queued', 'running', 'pass', 'fail', 'needs_review', 'technical_failed', 'incomplete',
+                    'confirmed', 'conditional', 'blocked', 'unresolved']
+    scoring_policy_version: Literal['1.5.2'] | None = None
+    eligibility_conditions: list[EligibilityCondition] = Field(default_factory=list)
+    legal_reviews: list[LegalReview] = Field(default_factory=list)
+    completed_stages: list[str] = Field(default_factory=list)
+    queue_position: int | None = Field(default=None, ge=1, le=20)
     eligible_for_ranking: bool = False
     rank: int | None = None
     score: Score | None = None
@@ -180,15 +243,45 @@ class Model(PublicContract):
     sources: list[Source] = Field(default_factory=list)
     discovery_sources: list[DiscoveryLead] = Field(default_factory=list)
 
+    @model_serializer(mode='wrap')
+    def policy_fields(self, handler):
+        value = handler(self)
+        if self.scoring_policy_version is None:
+            for key in ('scoring_policy_version', 'eligibility_conditions', 'legal_reviews', 'completed_stages', 'queue_position'):
+                value.pop(key, None)
+        return value
+
     @model_validator(mode='after')
     def rank_gate(self):
-        if self.eligible_for_ranking and (self.status != 'pass' or not self.score or self.score.status != 'final'):
-            raise ValueError('Only a final eligible assessment may be ranked')
-        if self.eligible_for_ranking and (len(self.criteria) != 10 or {c.id for c in self.criteria} != set(CRITERIA)
-                                         or any(c.result != 'pass' for c in self.criteria)):
-            raise ValueError('Every mandatory criterion must pass before ranking')
+        if self.status in {'confirmed', 'conditional', 'blocked', 'unresolved'} and not self.scoring_policy_version:
+            raise ValueError('Versioned eligibility requires its scoring policy')
+        if not self.scoring_policy_version:
+            if self.eligible_for_ranking and (self.status != 'pass' or not self.score or self.score.status != 'final'):
+                raise ValueError('Only a final eligible assessment may be ranked')
+            if self.eligible_for_ranking and (len(self.criteria) != 10 or {c.id for c in self.criteria} != set(CRITERIA)
+                                             or any(c.result != 'pass' for c in self.criteria)):
+                raise ValueError('Every mandatory criterion must pass before ranking')
+            if self.score and self.score.status == 'conditional':
+                raise ValueError('Conditional scores require a versioned scoring policy')
+        elif self.eligible_for_ranking:
+            expected = {'confirmed': 'final', 'conditional': 'conditional'}.get(self.status)
+            if not self.score or self.score.status != expected:
+                raise ValueError('Ranked score must match its eligibility category')
+            if len(self.criteria) != 10 or {c.id for c in self.criteria} != set(CRITERIA):
+                raise ValueError('All criteria must be assessed before ranking')
+            unknowns = {c.id for c in self.criteria if c.result == 'unknown'}
+            if any(c.result not in {'pass', 'unknown'} for c in self.criteria) or not unknowns <= CONDITIONAL_CRITERIA:
+                raise ValueError('Required criteria must pass before ranking')
+            if (self.status == 'confirmed' and unknowns) or (self.status == 'conditional' and not unknowns):
+                raise ValueError('Eligibility must honestly preserve criterion unknowns')
+            if not unknowns <= {c.criterion_id for c in self.eligibility_conditions if c.assumption and c.required_check}:
+                raise ValueError('Conditional criteria require explicit launch conditions')
+            if not self.legal_reviews or any(r.execution_state != 'completed' for r in self.legal_reviews):
+                raise ValueError('Ranking requires a completed legal document review for each analogue')
         if self.rank is not None and not self.eligible_for_ranking:
             raise ValueError('Unfinished assessment cannot have a rank')
+        if self.scoring_policy_version and self.status in {'queued', 'running', 'technical_failed', 'blocked', 'unresolved'} and self.score:
+            raise ValueError('Unfinished or excluded reassessments cannot reuse an old score')
         return self
 
 
@@ -218,6 +311,17 @@ class PublicSnapshot(PublicContract):
     parent_run_id: str | None = Field(default=None, pattern=IDENTIFIER)
     parent_model_id: str | None = Field(default=None, pattern=IDENTIFIER)
     launch_conditions: list[str] = Field(default_factory=list, max_length=30)
+    scoring_policy_version: Literal['1.5.2'] | None = None
+    reassessment_of_collection_id: str | None = Field(default=None, pattern=IDENTIFIER)
+    processing_order: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_serializer(mode='wrap')
+    def policy_fields(self, handler):
+        value = handler(self)
+        if self.scoring_policy_version is None:
+            for key in ('scoring_policy_version', 'reassessment_of_collection_id', 'processing_order'):
+                value.pop(key, None)
+        return value
 
     @model_validator(mode='after')
     def counts(self):
@@ -231,6 +335,13 @@ class PublicSnapshot(PublicContract):
                 raise ValueError('A focused analysis cannot be its own parent')
         if len({m.id for m in self.models}) != len(self.models):
             raise ValueError('Duplicate public model identity')
+        if any(m.scoring_policy_version != self.scoring_policy_version for m in self.models):
+            raise ValueError('A collection cannot mix scoring policies')
+        if self.reassessment_of_collection_id and (not self.scoring_policy_version or self.reassessment_of_collection_id == self.run_id):
+            raise ValueError('Reassessment requires a new collection and scoring policy')
+        if self.processing_order and (len(set(self.processing_order)) != len(self.models)
+                                      or set(self.processing_order) != {m.id for m in self.models}):
+            raise ValueError('Processing order must cover every selected model once')
         if len(self.models) > self.expected_count:
             raise ValueError('Collection exceeds its declared size')
         if len(self.models) < self.expected_count and self.status != 'partial':
@@ -243,6 +354,55 @@ class PublicSnapshot(PublicContract):
 def _clip(value, limit=320):
     value = str(value or '')
     return value if len(value) <= limit else value[:limit - 1].rstrip() + '…'
+
+
+def _legal_reviews(reviews, known_sources, source_metadata):
+    """Only public source manifests and short reviewed fragments leave the graph."""
+    output = []
+    for review in reviews:
+        documents = []
+        for document in review.get('documents', []):
+            source_id = document.get('snapshot_id') or document.get('source_snapshot_id')
+            details = source_metadata.get(source_id) or {}
+            documents.append(dict(url=safe_url(document.get('url')),
+                title=document.get('title') or details.get('title'),
+                document_type=document.get('document_type') or 'other_legal',
+                disposition=document.get('disposition') or ('read' if source_id in known_sources else 'inaccessible'),
+                source_id=source_id if source_id in known_sources else None,
+                effective_date=document.get('effective_date'), version=document.get('version'), reason=document.get('reason')))
+        actions = []
+        for action in review.get('search_actions', []):
+            if isinstance(action, str):
+                actions.append(_clip(action))
+            elif isinstance(action, dict):
+                parts = [str(action[key]) for key in ('action', 'query', 'url', 'outcome') if action.get(key)]
+                if parts:
+                    actions.append(_clip(' · '.join(parts)))
+        execution = review.get('execution_state') or 'pending'
+        gaps = []
+        for gap in [*review.get('gaps', []), *review.get('analysis_gaps', [])]:
+            if isinstance(gap, str):
+                gaps.append(gap)
+            elif isinstance(gap, dict):
+                # Acquisition gaps carry structured reason codes, not free-form
+                # public payloads; private artifact/provider details stay private.
+                parts = [str(gap[key]) for key in ('code', 'reason', 'message', 'url') if gap.get(key)]
+                if type(gap.get('document_count')) is int and gap['document_count'] > 0:
+                    parts.append(f"{gap['document_count']} documents outside this bounded review")
+                if safe_url(gap.get('final_url')):
+                    parts.append('Redirect destination: ' + gap['final_url'])
+                if parts:
+                    gaps.append(' · '.join(parts))
+        output.append(dict(analogue_id=review['analogue_id'],
+            analogue_name=review.get('company_name') or review.get('product_name'),
+            execution_state=execution, coverage=review.get('coverage') if execution == 'completed' else None,
+            supplier_role=review.get('supplier_role'), our_role_applicability=review.get('our_role_applicability'),
+            documents=documents,
+            clauses=[dict(source_id=clause['source_snapshot_id'], excerpt=_clip(clause.get('excerpt')),
+                          locator=clause.get('locator'), finding=clause.get('finding') or '')
+                     for clause in review.get('clauses', []) if clause.get('source_snapshot_id') in known_sources],
+            gaps=list(dict.fromkeys(gaps)), search_actions=actions))
+    return output
 
 
 def public_model(result, metadata: dict, config) -> dict:
@@ -278,11 +438,14 @@ def public_model(result, metadata: dict, config) -> dict:
     if status not in STATUS_LABELS:
         status = 'incomplete'
     raw_score = card.get('score') or {}
-    eligible = (status == 'pass' and card.get('publication') == 'ready'
-                and not card.get('publication_blockers') and raw_score.get('status') == 'final')
+    policy = card.get('scoring_policy_version') or metadata.get('scoring_policy_version') or getattr(config, 'scoring_policy_version', None)
+    expected_score = ({'confirmed': 'final', 'conditional': 'conditional'}.get(status) if policy else
+                      ('final' if status == 'pass' else None))
+    eligible = (expected_score is not None and card.get('publication') == 'ready'
+                and not card.get('publication_blockers') and raw_score.get('status') == expected_score)
     score = None
     if raw_score.get('value') is not None and raw_score.get('bounds'):
-        score = dict(status='final' if eligible else 'provisional', value=raw_score['value'],
+        score = dict(status=expected_score if eligible else 'provisional', value=raw_score['value'],
                      low=raw_score['bounds']['low'], high=raw_score['bounds']['high'],
                      goal_feasibility=raw_score['goal_feasibility'])
     criteria = [dict(id=criterion['criterion_id'], name=CRITERIA.get(criterion['criterion_id'], criterion['criterion_id']),
@@ -292,10 +455,14 @@ def public_model(result, metadata: dict, config) -> dict:
                                    for basis in criterion.get('design_basis', [])],
                      confidence=criterion.get('confidence'), confidence_reason=criterion.get('confidence_reason'))
                 for criterion in state.get('criteria', [])]
+    if policy:
+        for criterion in criteria:
+            if criterion['id'] == 'F09':
+                criterion['name'] = 'Not a government-operated service'
     limitations = [*critique.get('limitations', []), *factors.get('limitations', [])]
     if state.get('source_gaps'):
         limitations.append(f"{len(state['source_gaps'])} source leads could not be fully assessed. Missing evidence remains unknown.")
-    if status == 'pass' and not eligible:
+    if status in {'pass', 'confirmed', 'conditional'} and not eligible:
         limitations.append('Publication checks are incomplete. This model is excluded from the final ranking.')
     if metadata.get('error_note'):
         limitations.append(str(metadata['error_note']))
@@ -317,6 +484,15 @@ def public_model(result, metadata: dict, config) -> dict:
         limitations=list(dict.fromkeys(limitations)), claims=list(claims.values()), sources=sources,
         discovery_sources=discovery,
     )
+    if policy:
+        value.update(scoring_policy_version=policy, queue_position=metadata.get('queue_position'),
+            eligibility_conditions=[dict(condition_id=condition['condition_id'], criterion_id=condition['criterion_id'],
+                assumption=condition['assumption'], required_check=condition['required_check'],
+                impact_on_factors=condition['impact_on_factors'],
+                source_ids=[evidence_map[eid] for eid in condition.get('evidence_ids', []) if eid in evidence_map])
+                for condition in card.get('eligibility_conditions', [])],
+            legal_reviews=_legal_reviews(card.get('legal_reviews', []), known_sources, source_metadata),
+            completed_stages=[stage for stage in card.get('completed_stages', []) if stage in STAGES])
     return Model.model_validate(value).model_dump(mode='json')
 
 
@@ -342,8 +518,9 @@ def publish_snapshot(data_dir, snapshot: dict, *, set_latest: bool = True) -> Pa
         raise ValueError('A focused analysis cannot replace the main collection')
     for model in public.models:
         model.rank = None
-    for goal in GOALS:
-        ranked = sorted((m for m in public.models if m.eligible_for_ranking and m.score.goal_feasibility == goal),
+    for category, goal in ((category, goal) for category in ('final', 'conditional') for goal in GOALS):
+        ranked = sorted((m for m in public.models if m.eligible_for_ranking and m.score.status == category
+                         and m.score.goal_feasibility == goal),
                         key=lambda m: (m.score.value, m.title.casefold(), m.id))
         previous, place = None, 0
         for index, model in enumerate(ranked, 1):

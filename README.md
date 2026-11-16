@@ -120,3 +120,32 @@ The latest saved public result appears at `/`; specific collections at `/runs/{i
 Cards and comparison stay within that collection and scenario. A failed mandatory
 criterion or unresolved evidence does not produce a final score. Public pages cannot
 start a run. Deployment remains an explicit full-SHA GitHub Actions release.
+
+## Reassess the existing twenty models
+
+The conditional-scoring revision retains the original scenario, model identities,
+documents and cumulative study budget. It creates new assessment scopes, examines
+each comparable's legal documents, and publishes each completed card immediately.
+The ordinary homepage and model links show the current revision; historical
+`?run=` links retain the earlier analysis for audit. Conditional and final ranks
+remain separate, and unknown criteria are not silently changed to pass.
+
+After releasing the tested code, run inside the same isolated one-off research
+container with the existing server-only provider environment:
+
+```sh
+python -m ai_builder.reassess_collection \
+  --parent-collection 1d76fe99e56240989cd67794b7143dce \
+  --config /app/config/conditional-config.json \
+  --settings /app/config/conditional-roles.json \
+  --analogues /app/config/conditional-analogues.json \
+  --first-model 23c49394cadf4e0ab3b7f78d9d70373a
+```
+
+The printed collection ID is the resume handle. Resume with
+`python -m ai_builder.reassess_collection --resume-collection COLLECTION_ID`;
+add `--retry-failed` only for explicit recovery of technical failures. Resume
+cannot replace inputs or increase limits. The original $100 study cap includes
+all previous charges and reservations; this command never allocates a new cap.
+Ordering is frozen from the source results: F10 pass first, then fewer unknowns,
+with the requested first model breaking a tie. No second discovery is performed.

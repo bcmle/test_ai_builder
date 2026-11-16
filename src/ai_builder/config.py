@@ -62,7 +62,8 @@ class FactorConfig(Contract):
 
 
 class Configuration(Contract):
-    schema_version: Literal["1.0", "1.1"]
+    schema_version: Literal["1.0", "1.1", "1.2"]
+    scoring_policy_version: Literal['1.5.2'] | None = None
     language: Literal["en"]
     model: str = Field(min_length=1)
     market: str
@@ -72,14 +73,23 @@ class Configuration(Contract):
     criteria: list[CriterionConfig]
     factors: list[FactorConfig]
 
+    @model_serializer(mode='wrap')
+    def legacy_compatible(self, handler):
+        value = handler(self)
+        if self.scoring_policy_version is None:
+            value.pop('scoring_policy_version', None)
+        return value
+
     @model_validator(mode="after")
     def invariants(self):
+        if (self.schema_version == '1.2') != (self.scoring_policy_version == '1.5.2'):
+            raise ValueError('Schema 1.2 requires scoring policy 1.5.2; legacy policies cannot be changed')
         if self.market in {"RU", "BY", "AM", "AZ", "KZ", "KG", "MD", "TJ", "TM", "UZ"}:
             raise ValueError("Excluded market")
         if len(self.criteria) != 10 or {c.id for c in self.criteria} != {f"F{i:02}" for i in range(1, 11)}:
             raise ValueError("All ten mandatory filters must be configured exactly once")
         allowed_design = {'F02', 'F05', 'F06', 'F07', 'F08', 'F09'}
-        if any(c.allow_design_basis and (self.schema_version != '1.1' or c.id not in allowed_design)
+        if any(c.allow_design_basis and (self.schema_version not in {'1.1', '1.2'} or c.id not in allowed_design)
                for c in self.criteria):
             raise ValueError('Design basis is limited to the v1.1 operational criteria')
         if len(self.factors) != 5 or {f.id for f in self.factors} != {f"S{i:02}" for i in range(1, 6)}:
